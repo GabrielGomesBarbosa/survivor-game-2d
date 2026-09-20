@@ -220,8 +220,9 @@ export interface SolidCollisionResult {
 
 /**
  * Resolução pura de colisão física sólida não-elástica entre Killer e Player:
- * - Se a distância for menor que a soma dos raios (minDistance), detecta penetração.
- * - Reposiciona os corpos para garantir distância >= minDistance (bloqueio rígido sem sobreposição).
+ * - Se a distância for menor que a soma dos raios (minDistance), detecta colisão.
+ * - Imobilidade mútua rígida: uma entidade em repouso NUNCA é deslocada por empurrão alheio.
+ * - Bloqueio estrito contra penetração em paredes estáticas do cenário.
  * - Anula completamente a velocidade vetorial de aproximação ao longo da normal de colisão.
  */
 export function resolveSolidBodyCollision(
@@ -253,31 +254,60 @@ export function resolveSolidBodyCollision(
   const nx = dist > 0.001 ? dx / dist : 0;
   const ny = dist > 0.001 ? dy / dist : -1;
 
+  // Componentes de aproximação mútua ao longo da normal
+  const pSpeedTowards = pVel.x * nx + pVel.y * ny;
+  const kSpeedTowards = kVel.x * (-nx) + kVel.y * (-ny);
+
+  const isPlayerApproaching = pSpeedTowards > 0.01;
+  const isKillerApproaching = kSpeedTowards > 0.01;
+
+  const isPlayerAtRest = !isPlayerApproaching && Math.hypot(pVel.x, pVel.y) < 1.0;
+  const isKillerAtRest = !isKillerApproaching && Math.hypot(kVel.x, kVel.y) < 1.0;
+
+  let dispK = 0;
+  let dispP = 0;
+
+  if (isKillerAtRest && !isPlayerAtRest) {
+    // Killer em repouso: Não é empurrado; apenas o Player recua
+    dispK = 0;
+    dispP = overlap;
+  } else if (isPlayerAtRest && !isKillerAtRest) {
+    // Player em repouso: Não é empurrado; apenas o Killer recua
+    dispK = overlap;
+    dispP = 0;
+  } else if (isPlayerApproaching && isKillerApproaching) {
+    // Ambos em aproximação: Repartição mútua sem transferência de empurrão
+    const total = pSpeedTowards + kSpeedTowards;
+    dispP = total > 0.001 ? overlap * (pSpeedTowards / total) : overlap * 0.5;
+    dispK = total > 0.001 ? overlap * (kSpeedTowards / total) : overlap * 0.5;
+  } else {
+    // Repouso mútuo ou contato estático: Separação simétrica 50/50
+    dispK = overlap * 0.5;
+    dispP = overlap * 0.5;
+  }
+
   let killerX = killer.x;
   let killerY = killer.y;
   let playerX = player.x;
   let playerY = player.y;
 
-  if (isWalkable) {
-    const candidateKx = killer.x + nx * overlap;
-    const candidateKy = killer.y + ny * overlap;
-    if (isWalkable(candidateKx, candidateKy)) {
+  // Aplicação das posições com bloqueio estrito contra paredes
+  if (dispK > 0) {
+    const candidateKx = killer.x + nx * dispK;
+    const candidateKy = killer.y + ny * dispK;
+    if (!isWalkable || isWalkable(candidateKx, candidateKy)) {
       killerX = candidateKx;
       killerY = candidateKy;
-    } else {
-      const candidatePx = player.x - nx * overlap;
-      const candidatePy = player.y - ny * overlap;
-      if (isWalkable(candidatePx, candidatePy)) {
-        playerX = candidatePx;
-        playerY = candidatePy;
-      } else {
-        killerX = candidateKx;
-        killerY = candidateKy;
-      }
     }
-  } else {
-    killerX += nx * overlap;
-    killerY += ny * overlap;
+  }
+
+  if (dispP > 0) {
+    const candidatePx = player.x - nx * dispP;
+    const candidatePy = player.y - ny * dispP;
+    if (!isWalkable || isWalkable(candidatePx, candidatePy)) {
+      playerX = candidatePx;
+      playerY = candidatePy;
+    }
   }
 
   const { killerVel: resKVel, playerVel: resPVel } = resolveAntiPushVelocity(kVel, pVel, dx, dy);

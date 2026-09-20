@@ -113,7 +113,7 @@ export class SandboxScene extends Phaser.Scene {
       this.killer.handlePlayerCollision(this.player, this.debugPanel.settings, () => this.telemetryHud.showAttackAlert());
     });
     this.events.on(Phaser.Scenes.Events.POST_UPDATE, (_: number, d: number) => {
-      this.player.postUpdate(d, this.mapData.navGrid); this.updateTelemetry();
+      this.player.postUpdate(d, this.mapData.navGrid); this.killer.postUpdate(d, this.mapData.navGrid); this.updateTelemetry();
     });
 
     // 6. Camera & World Bounds

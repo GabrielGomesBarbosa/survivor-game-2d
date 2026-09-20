@@ -72,19 +72,61 @@ describe('Physics & Navigation Bounds Logic (Pure Rules)', () => {
     expect(res.playerVel.x).toBe(10);
   });
 
-  it('displaces player when killer is blocked against a solid wall', () => {
-    const player = { x: 100, y: 100, radius: 66.25, vx: 0, vy: 0 };
-    const killer = { x: 100, y: 80, radius: 84.8, vx: 0, vy: 150 };
+  it('guarantees collision between entities never alters the position of an entity at rest (mutual immobility)', () => {
+    // Caso 1: Killer em repouso absoluto (vx = 0, vy = 0), Player colidindo com velocidade
+    const killerAtRest = { x: 100, y: 100, radius: 84.8, vx: 0, vy: 0 };
+    const movingPlayer = { x: 100, y: 120, radius: 66.25, vx: 0, vy: -140 };
 
-    // Simula que a posição para onde o killer seria empurrado (y < 80) é parede sólida
-    const isWalkable = (_x: number, y: number) => y >= 80;
+    const res1 = resolveSolidBodyCollision(killerAtRest, movingPlayer);
+
+    expect(res1.hasCollision).toBe(true);
+    // A posição do Killer em repouso NÃO pode ser alterada
+    expect(res1.killerPos.x).toBe(100);
+    expect(res1.killerPos.y).toBe(100);
+    // O Player recua até a distância mínima de segurança
+    expect(res1.playerPos.y).toBeCloseTo(100 + res1.minDistance, 1);
+    expect(res1.playerVel.y).toBe(0);
+
+    // Caso 2: Player em repouso absoluto (vx = 0, vy = 0), Killer colidindo com velocidade
+    const playerAtRest = { x: 100, y: 100, radius: 66.25, vx: 0, vy: 0 };
+    const movingKiller = { x: 100, y: 80, radius: 84.8, vx: 0, vy: 150 };
+
+    const res2 = resolveSolidBodyCollision(movingKiller, playerAtRest);
+
+    expect(res2.hasCollision).toBe(true);
+    // A posição do Player em repouso NÃO pode ser alterada
+    expect(res2.playerPos.x).toBe(100);
+    expect(res2.playerPos.y).toBe(100);
+    // O Killer recua até a distância mínima de segurança
+    expect(res2.killerPos.y).toBeCloseTo(100 - res2.minDistance, 1);
+    expect(res2.killerVel.y).toBe(0);
+  });
+
+  it('guarantees strict wall non-penetration: collision resolution never displaces entity into static wall bounds', () => {
+    // Killer em repouso rente a uma parede sólida superior (y <= 100 é livre, y < 100 é parede)
+    const killer = { x: 100, y: 100, radius: 84.8, vx: 0, vy: 0 };
+    const player = { x: 100, y: 120, radius: 66.25, vx: 0, vy: -140 };
+
+    const isWalkable = (_x: number, y: number) => y >= 100;
 
     const res = resolveSolidBodyCollision(killer, player, isWalkable);
 
     expect(res.hasCollision).toBe(true);
-    // Player é empurrado para frente para liberar espaço
-    const finalDist = Math.hypot(res.killerPos.x - res.playerPos.x, res.killerPos.y - res.playerPos.y);
-    expect(finalDist).toBeGreaterThanOrEqual(res.minDistance - 0.001);
+    // Killer em repouso rente à parede não é empurrado para dentro da parede
+    expect(res.killerPos.y).toBe(100);
+    expect(res.killerPos.y).toBeGreaterThanOrEqual(100);
+
+    // Caso inverso: Entidade que recuaria contra uma parede sólida tem seu recuo contido
+    const movingKiller = { x: 100, y: 80, radius: 84.8, vx: 0, vy: 150 };
+    const playerAtRest = { x: 100, y: 100, radius: 66.25, vx: 0, vy: 0 };
+    // y < 80 é parede sólida
+    const isWalkableTop = (_x: number, y: number) => y >= 80;
+
+    const resWall = resolveSolidBodyCollision(movingKiller, playerAtRest, isWalkableTop);
+    // Killer não ultrapassa o limite da parede estática (y >= 80)
+    expect(resWall.killerPos.y).toBeGreaterThanOrEqual(80);
+    // Player em repouso permanece intacto
+    expect(resWall.playerPos.y).toBe(100);
   });
 
   it('allows killer to slide tangentially without sticking', () => {

@@ -18,6 +18,10 @@ export class Killer implements IKillerPawn {
   public sprite: Phaser.Physics.Arcade.Sprite;
   public controller!: IKillerController;
 
+  // Trava de integridade contra penetração em paredes
+  public lastSafeX = 1280;
+  public lastSafeY = 224;
+
   // Ataque e colisão
   private lastAttackTime = 0;
 
@@ -49,6 +53,8 @@ export class Killer implements IKillerPawn {
     this.navGrid = navGrid;
     this.walls = walls;
     this.obstacles = obstacles;
+    this.lastSafeX = x;
+    this.lastSafeY = y;
 
     // Sprite físico do Killer (clone com tom avermelhado e escala 1.28x)
     this.sprite = scene.physics.add.sprite(x, y, 'survivor', 0);
@@ -167,10 +173,22 @@ export class Killer implements IKillerPawn {
     }
   }
 
-  public isWalkableTile(x: number, y: number): boolean {
-    const col = Math.floor(x / TILE_SIZE);
-    const row = Math.floor(y / TILE_SIZE);
-    return row >= 0 && row < ROWS && col >= 0 && col < COLS && this.navGrid[row]?.[col] === 0;
+  public isWalkableTile(x: number, y: number, margin: number = 20): boolean {
+    const points = [
+      { x, y },
+      { x: x - margin, y },
+      { x: x + margin, y },
+      { x, y: y - margin },
+      { x, y: y + margin }
+    ];
+    for (const pt of points) {
+      const col = Math.floor(pt.x / TILE_SIZE);
+      const row = Math.floor(pt.y / TILE_SIZE);
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS || this.navGrid[row]?.[col] !== 0) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -214,12 +232,43 @@ export class Killer implements IKillerPawn {
       this.sprite.setPosition(resolution.killerPos.x, resolution.killerPos.y);
       player.sprite.setPosition(resolution.playerPos.x, resolution.playerPos.y);
 
+      this.enforceWallBounds(this.navGrid);
+      player.enforceWallBounds(this.navGrid);
+
       killerBody.setVelocity(resolution.killerVel.x, resolution.killerVel.y);
       playerBody.setVelocity(resolution.playerVel.x, resolution.playerVel.y);
 
       killerBody.updateCenter();
       playerBody.updateCenter();
     }
+  }
+
+  /**
+   * Guarda pós-física anti-tunelamento para o Killer: se penetrar em uma célula sólida,
+   * restaura instantaneamente para a última posição segura conhecida com velocidade zero.
+   * @param {number[][]} navGrid - Matriz de navegação 0 (livre) e 1 (parede).
+   */
+  public enforceWallBounds(navGrid: number[][]): void {
+    if (!this.sprite || !this.sprite.body || navGrid.length === 0) return;
+
+    const col = Math.floor(this.sprite.x / TILE_SIZE);
+    const row = Math.floor(this.sprite.y / TILE_SIZE);
+
+    if (row >= 0 && row < ROWS && col >= 0 && col < COLS && navGrid[row]?.[col] === 0) {
+      this.lastSafeX = this.sprite.x;
+      this.lastSafeY = this.sprite.y;
+    } else {
+      this.sprite.setPosition(this.lastSafeX, this.lastSafeY);
+      this.sprite.setVelocity(0, 0);
+      (this.sprite.body as Phaser.Physics.Arcade.Body).updateCenter();
+    }
+  }
+
+  /**
+   * Pós-processamento físico do Killer no POST_UPDATE.
+   */
+  public postUpdate(_delta: number, navGrid: number[][]): void {
+    this.enforceWallBounds(navGrid);
   }
 
   /**
