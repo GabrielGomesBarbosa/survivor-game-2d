@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "convert-assets": "node scripts/convert-assets.js && node scripts/process-generator.js",
     "convert-generator": "node scripts/process-generator.js"
   },
@@ -23,6 +24,7 @@
     "@types/node": "^26.6.2",
     "sharp": "^0.35.4",
     "typescript": "^5.8.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
   }
 }
