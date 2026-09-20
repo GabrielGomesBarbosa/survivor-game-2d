@@ -8,7 +8,7 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes } from '../utils/gameLogic';
 import { Player } from './Player';
 import { Generator } from './Generator';
 import { IKillerController } from '../controllers/KillerController';
@@ -311,7 +311,7 @@ export class Killer implements IKillerPawn {
 
     const pX = -dy / dist;
     const pY = dx / dist;
-    const margin = 26;
+    const margin = 34; // Folga lateral considerando o raio físico do Killer (~34-36px)
 
     const rays = [
       new Phaser.Geom.Line(x1, y1, x2, y2),
@@ -338,7 +338,7 @@ export class Killer implements IKillerPawn {
   }
 
   /**
-   * Executa o cálculo de caminho A* usando EasyStar.js.
+   * Executa o cálculo de caminho A* usando EasyStar.js com suavização e ancoragem no destino exato.
    */
   public calculatePath(
     fromX: number,
@@ -362,7 +362,15 @@ export class Killer implements IKillerPawn {
           x: p.x * TILE_SIZE + TILE_SIZE / 2,
           y: p.y * TILE_SIZE + TILE_SIZE / 2
         }));
-        onPathFound(mapped);
+
+        // Suavização da rota eliminando degraus e ancorando exatamente no ponto alvo (toX, toY)
+        const smoothed = smoothPathNodes(
+          mapped,
+          { x: toX, y: toY },
+          (x1, y1, x2, y2) => this.hasLineOfSight(x1, y1, x2, y2)
+        );
+
+        onPathFound(smoothed);
       }
     });
     this.easystar.calculate();
@@ -457,7 +465,7 @@ export class Killer implements IKillerPawn {
         }
 
         const lastNode = path[path.length - 1];
-        if (lastNode) {
+        if (lastNode && (lastNode.x !== targetPos.x || lastNode.y !== targetPos.y)) {
           this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, targetPos.x, targetPos.y);
         }
 
@@ -486,6 +494,18 @@ export class Killer implements IKillerPawn {
         const n1 = path[i];
         const n2 = path[i + 1];
         this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
+      }
+      const lastNode = path[path.length - 1];
+      if (lastNode && (lastNode.x !== targetPos.x || lastNode.y !== targetPos.y)) {
+        this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, targetPos.x, targetPos.y);
+      }
+
+      for (let i = pathIndex; i < path.length; i++) {
+        const node = path[i];
+        if (node.x !== targetPos.x || node.y !== targetPos.y) {
+          this.aStarGraphic.fillStyle(0xffffff, 0.85);
+          this.aStarGraphic.fillCircle(node.x, node.y, 4);
+        }
       }
 
       this.aStarGraphic.fillStyle(0xff2222, 0.9);

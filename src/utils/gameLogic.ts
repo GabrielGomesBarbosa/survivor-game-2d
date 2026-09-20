@@ -596,6 +596,183 @@ export function getGeneratorStandOffPoint(
   return list[0];
 }
 
+/**
+ * Constrói a malha de busca ponderada para o EasyStar A*:
+ * - 0: Célula livre e afastada de paredes (custo padrão 1)
+ * - 1: Parede arquitetônica sólida (intransponível)
+ * - 2: Célula livre imediatamente adjacente a paredes ou quinas (custo elevado 4)
+ *
+ * Isso orienta a heurística do A* a preferir o centro dos corredores e salas,
+ * afastando o trajeto do Killer das quinas e mantendo folga física.
+ *
+ * @param navGrid Matriz binária 0 (livre) e 1 (parede).
+ * @returns Matriz com custos para o EasyStar.
+ */
+export function buildAiWeightedGrid(navGrid: number[][]): number[][] {
+  const rows = navGrid.length;
+  if (rows === 0) return [];
+  const cols = navGrid[0].length;
+  const weighted: number[][] = [];
+
+  for (let r = 0; r < rows; r++) {
+    weighted[r] = new Array(cols);
+    for (let c = 0; c < cols; c++) {
+      if (navGrid[r][c] === 1) {
+        weighted[r][c] = 1; // Parede
+      } else {
+        // Verifica se é adjacente a alguma parede (8 direções)
+        let nearWall = false;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            const nr = r + dr;
+            const nc = c + dc;
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && navGrid[nr][nc] === 1) {
+              nearWall = true;
+              break;
+            }
+          }
+          if (nearWall) break;
+        }
+        weighted[r][c] = nearWall ? 2 : 0;
+      }
+    }
+  }
+
+  return weighted;
+}
+
+/**
+ * Testa se um segmento retilíneo possui passagem desobstruída na malha navGrid,
+ * considerando uma margem transversal de folga em pixels (raio físico da entidade).
+ *
+ * @param x1 Ponto inicial X.
+ * @param y1 Ponto inicial Y.
+ * @param x2 Ponto final X.
+ * @param y2 Ponto final Y.
+ * @param navGrid Matriz de navegação onde 1 = parede.
+ * @param margin Margem de folga lateral em pixels (padrão: 34px).
+ * @param tileSize Tamanho do bloco em pixels (padrão: 64px).
+ */
+export function isRayClearOnNavGrid(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  navGrid: number[][],
+  margin: number = 34,
+  tileSize: number = 64
+): boolean {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 2) return true;
+
+  const nx = -dy / dist;
+  const ny = dx / dist;
+
+  const rows = navGrid.length;
+  const cols = navGrid[0].length;
+
+  // Amostragem transversal de segurança (centro, raio positivo e raio negativo)
+  const stepSize = tileSize * 0.4;
+  const steps = Math.ceil(dist / stepSize);
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const cx = x1 + dx * t;
+    const cy = y1 + dy * t;
+
+    const testPoints = [
+      { x: cx, y: cy },
+      { x: cx + nx * margin, y: cy + ny * margin },
+      { x: cx - nx * margin, y: cy - ny * margin }
+    ];
+
+    for (const pt of testPoints) {
+      const col = Math.floor(pt.x / tileSize);
+      const row = Math.floor(pt.y / tileSize);
+      if (row < 0 || row >= rows || col < 0 || col >= cols || navGrid[row]?.[col] === 1) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Suavização de Caminho (Raycast Smoothing / String Pulling):
+ * - Substitui o último nó da rota pela coordenada contínua exata de destino (targetPos).
+ * - Realiza varredura gananciosa com raycasting desobstruído (LOS) entre nós não-consecutivos.
+ * - Elimina nós intermediários em degrau quando há linha reta livre.
+ * - Retorna a rota otimizada em retas diagonais limpas terminando com precisão milimétrica em targetPos.
+ *
+ * @param rawNodes Nós discretos retornados pelo A* em coordenadas de mundo { x, y }.
+ * @param targetPos Ponto final contínuo exato de destino { x, y }.
+ * @param hasLineOfSight Função que testa se dois pontos têm linha de visão livre com folga de parede.
+ * @returns Lista suavizada de pontos de caminho terminando em targetPos.
+ */
+export function smoothPathNodes(
+  rawNodes: Array<{ x: number; y: number }>,
+  targetPos: { x: number; y: number },
+  hasLineOfSight: (x1: number, y1: number, x2: number, y2: number) => boolean
+): Array<{ x: number; y: number }> {
+  if (!rawNodes || rawNodes.length === 0) {
+    return [{ x: targetPos.x, y: targetPos.y }];
+  }
+
+  const candidates = rawNodes.map((n) => ({ x: n.x, y: n.y }));
+  const lastIdx = candidates.length - 1;
+
+  if (candidates.length === 1) {
+    candidates[0] = { x: targetPos.x, y: targetPos.y };
+  } else {
+    // Se o penúltimo nó tiver linha de visão livre para o targetPos, substitui o último nó diretamente
+    if (hasLineOfSight(candidates[lastIdx - 1].x, candidates[lastIdx - 1].y, targetPos.x, targetPos.y)) {
+      candidates[lastIdx] = { x: targetPos.x, y: targetPos.y };
+    } else if (hasLineOfSight(candidates[lastIdx].x, candidates[lastIdx].y, targetPos.x, targetPos.y)) {
+      if (Math.hypot(candidates[lastIdx].x - targetPos.x, candidates[lastIdx].y - targetPos.y) < 64) {
+        candidates[lastIdx] = { x: targetPos.x, y: targetPos.y };
+      } else {
+        candidates.push({ x: targetPos.x, y: targetPos.y });
+      }
+    } else {
+      candidates.push({ x: targetPos.x, y: targetPos.y });
+    }
+  }
+
+  if (candidates.length <= 2) {
+    return candidates;
+  }
+
+  // String Pulling
+  const smoothed: Array<{ x: number; y: number }> = [candidates[0]];
+  let current = 0;
+
+  while (current < candidates.length - 1) {
+    let furthest = current + 1;
+    for (let check = candidates.length - 1; check > current + 1; check--) {
+      if (hasLineOfSight(candidates[current].x, candidates[current].y, candidates[check].x, candidates[check].y)) {
+        furthest = check;
+        break;
+      }
+    }
+    smoothed.push(candidates[furthest]);
+    current = furthest;
+  }
+
+  // Assegura que o último ponto seja targetPos se visível
+  const finalNode = smoothed[smoothed.length - 1];
+  if (finalNode.x !== targetPos.x || finalNode.y !== targetPos.y) {
+    if (hasLineOfSight(finalNode.x, finalNode.y, targetPos.x, targetPos.y)) {
+      smoothed.push({ x: targetPos.x, y: targetPos.y });
+    }
+  }
+
+  return smoothed;
+}
+
 export interface PatrolTarget {
   name: string;
   x: number;
@@ -680,6 +857,9 @@ export class GeneratorPatrolManager {
   public isInspecting = false;
   public currentDestination: PatrolTarget | null = null;
   public totalInspectDuration = 2500; // 2.5s (entre 2s e 3s)
+  public lastVisitedGenerator: string | null = null;
+  public visitHistory: Map<string, number> = new Map();
+  public visitCounter = 0;
 
   /**
    * Filtra estritamente geradores incompletos e com coordenadas válidas.
@@ -706,22 +886,94 @@ export class GeneratorPatrolManager {
   }
 
   /**
-   * Obtém o próximo destino de patrulha na sequência cíclica:
-   * - Percorre a fila de geradores incompletos ciclicamente.
-   * - Se todos estiverem concluídos, patrulha as salas principais.
+   * Filtra geradores ativos preservando o progresso para ponderação dinâmica.
+   */
+  public filterActiveGeneratorsWithProgress(
+    generators: Array<{ name: string; x: number; y: number; progress?: number; isCompleted?: boolean } | null | undefined>
+  ): Array<{ name: string; x: number; y: number; progress: number }> {
+    return (generators || [])
+      .filter((g): g is { name: string; x: number; y: number; progress?: number; isCompleted?: boolean } => {
+        if (!g) return false;
+        if (g.isCompleted) return false;
+        if (typeof g.progress === 'number' && g.progress >= 100) return false;
+        return (
+          typeof g.x === 'number' &&
+          typeof g.y === 'number' &&
+          !isNaN(g.x) &&
+          !isNaN(g.y) &&
+          isFinite(g.x) &&
+          isFinite(g.y)
+        );
+      })
+      .map((g) => ({
+        name: g.name,
+        x: g.x,
+        y: g.y,
+        progress: typeof g.progress === 'number' ? g.progress : 0
+      }));
+  }
+
+  /**
+   * Obtém o próximo destino de patrulha na sequência dinâmica/não-determinística:
+   * - Regra Mandatória: NUNCA repete o mesmo gerador em que acabou de inspecionar (se houver mais de 1).
+   * - Prioriza geradores sob reparo (progresso > 0%) e visitados há mais tempo (staleness).
+   * - Se todos os geradores foram concluídos, ronda pelas salas principais sem repetição consecutiva.
    */
   public getNextDestination(
     generators: Array<{ name: string; x: number; y: number; progress?: number; isCompleted?: boolean } | null | undefined>,
-    majorRooms: PatrolTarget[] = MAJOR_FACILITY_ROOMS
+    majorRooms: PatrolTarget[] = MAJOR_FACILITY_ROOMS,
+    rng: () => number = Math.random
   ): PatrolTarget | null {
-    const activeGens = this.filterActiveGenerators(generators);
+    const rawGens = this.filterActiveGeneratorsWithProgress(generators);
     this.isInspecting = false;
     this.inspectTimer = 0;
 
-    if (activeGens.length > 0) {
-      this.currentIndex = this.currentIndex % activeGens.length;
-      const target = activeGens[this.currentIndex];
-      this.currentIndex = (this.currentIndex + 1) % activeGens.length;
+    if (rawGens.length > 0) {
+      // Regra Mandatória: Se houver mais de 1 gerador incompleto, NUNCA sortear o mesmo que acabou de inspecionar
+      let candidates = rawGens;
+      if (rawGens.length > 1 && this.lastVisitedGenerator) {
+        const remaining = rawGens.filter((g) => g.name !== this.lastVisitedGenerator);
+        if (remaining.length > 0) {
+          candidates = remaining;
+        }
+      }
+
+      // Priorização ponderada:
+      // - Progresso > 0%: geradores com reparo em andamento recebem prioridade alta
+      // - Staleness: geradores visitados há mais tempo (ou nunca visitados) recebem prioridade
+      const weights = candidates.map((g) => {
+        let w = 1.0;
+        if (g.progress > 0) {
+          w += 2.0 + (g.progress / 100) * 3.0; // bônus de 2.0 a 5.0
+        }
+        const lastTick = this.visitHistory.get(g.name) ?? 0;
+        const staleness = Math.max(1, this.visitCounter - lastTick + 1);
+        w += staleness * 1.5;
+        return w;
+      });
+
+      const totalWeight = weights.reduce((acc, weight) => acc + weight, 0);
+      let randVal = rng() * totalWeight;
+      let chosen = candidates[0];
+
+      for (let i = 0; i < candidates.length; i++) {
+        randVal -= weights[i];
+        if (randVal <= 0) {
+          chosen = candidates[i];
+          break;
+        }
+      }
+
+      this.visitCounter++;
+      this.lastVisitedGenerator = chosen.name;
+      this.visitHistory.set(chosen.name, this.visitCounter);
+
+      const target: PatrolTarget = {
+        name: chosen.name,
+        x: chosen.x,
+        y: chosen.y,
+        type: 'generator'
+      };
       this.currentDestination = target;
       return target;
     }
@@ -729,9 +981,14 @@ export class GeneratorPatrolManager {
     // Se todos os geradores foram concluídos, ronda pelas salas principais
     const validRooms = (majorRooms || []).filter((r) => r && typeof r.x === 'number' && typeof r.y === 'number');
     if (validRooms.length > 0) {
-      this.currentIndex = this.currentIndex % validRooms.length;
-      const target = validRooms[this.currentIndex];
-      this.currentIndex = (this.currentIndex + 1) % validRooms.length;
+      let roomCandidates = validRooms;
+      if (validRooms.length > 1 && this.lastVisitedGenerator) {
+        const filtered = validRooms.filter((r) => r.name !== this.lastVisitedGenerator);
+        if (filtered.length > 0) roomCandidates = filtered;
+      }
+      const idx = Math.floor(rng() * roomCandidates.length);
+      const target = roomCandidates[idx];
+      this.lastVisitedGenerator = target.name;
       this.currentDestination = target;
       return target;
     }

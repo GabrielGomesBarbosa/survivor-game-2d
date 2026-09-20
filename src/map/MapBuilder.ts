@@ -8,6 +8,7 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { WORLD_WIDTH, WORLD_HEIGHT, TILE_SIZE, COLS, ROWS } from '../config/constants';
+import { buildAiWeightedGrid } from '../utils/gameLogic';
 
 export interface MapData {
   walls: Phaser.Physics.Arcade.StaticGroup;
@@ -216,9 +217,12 @@ export class MapBuilder {
       }
     }
 
+    const weightedGrid = buildAiWeightedGrid(navGrid);
     const easystar = new EasyStar.js();
-    easystar.setGrid(navGrid);
-    easystar.setAcceptableTiles([0]);
+    easystar.setGrid(weightedGrid);
+    easystar.setAcceptableTiles([0, 2]);
+    easystar.setTileCost(0, 1);
+    easystar.setTileCost(2, 4);
     easystar.enableDiagonals();
     (easystar as any).disableCornerCutting?.();
     (easystar as any).enableSync?.();
