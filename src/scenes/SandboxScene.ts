@@ -16,6 +16,11 @@ export interface DebugSettings {
   walkAnimFrameRate: number;
   runAnimFrameRate: number;
   cameraZoom: number;
+  // Killer Settings
+  killerSpeed: number;
+  detectionRadius: number;
+  showKillerVision: boolean;
+  killerAiEnabled: boolean;
 }
 
 const STORAGE_KEY = 'horror_topdown_debug_settings';
@@ -30,13 +35,44 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   showPhysicsDebug: true,
   walkAnimFrameRate: 8,
   runAnimFrameRate: 12,
-  cameraZoom: 1.0
+  cameraZoom: 1.0,
+  killerSpeed: 170,
+  detectionRadius: 280,
+  showKillerVision: true,
+  killerAiEnabled: true
 };
 
 export class SandboxScene extends Phaser.Scene {
   private player!: Phaser.Physics.Arcade.Sprite;
+  private killer!: Phaser.Physics.Arcade.Sprite;
   private walls!: Phaser.Physics.Arcade.StaticGroup;
   private obstacles!: Phaser.Physics.Arcade.StaticGroup;
+
+  // Killer AI (FSM)
+  private killerState: 'PATROL' | 'CHASE' = 'PATROL';
+  private patrolTarget: Phaser.Math.Vector2 = new Phaser.Math.Vector2(1500, 480);
+  private patrolWaitTimer = 0;
+  private killerVisionGraphic!: Phaser.GameObjects.Graphics;
+  private lastAttackTime = 0;
+  private attackAlertUI!: Phaser.GameObjects.Container;
+
+  // Pontos de patrulha navegáveis pelo complexo
+  private patrolWaypoints: Array<{ x: number; y: number }> = [
+    { x: 1500, y: 480 },  // Galpão Norte Centro
+    { x: 1250, y: 350 },  // Galpão Norte Oeste
+    { x: 1750, y: 350 },  // Galpão Norte Leste
+    { x: 1500, y: 780 },  // Corredor Norte
+    { x: 1100, y: 1000 }, // Corredor Oeste
+    { x: 1500, y: 1000 }, // Pátio Central
+    { x: 1900, y: 1000 }, // Corredor Leste
+    { x: 2500, y: 800 },  // Usina Termoelétrica
+    { x: 2500, y: 1300 }, // Sala dos Pilares
+    { x: 780, y: 850 },   // Saída Laboratório
+    { x: 500, y: 1200 },  // Posto Segurança
+    { x: 1500, y: 1400 }, // Acesso Bunker
+    { x: 1300, y: 1700 }, // Trincheira Sul
+    { x: 1700, y: 1700 }  // Checkpoint Sul
+  ];
 
   // Inputs
   private keyW!: Phaser.Input.Keyboard.Key;
@@ -60,6 +96,8 @@ export class SandboxScene extends Phaser.Scene {
     playerX: '1500',
     playerY: '1000',
     worldSize: '3000 x 2000',
+    killerState: 'PATROL',
+    killerDist: '0px',
     fps: 0
   };
 
@@ -124,6 +162,8 @@ export class SandboxScene extends Phaser.Scene {
     this.createEnvironment();
     this.createAnimations();
     this.createPlayer();
+    this.createKiller();
+    this.createAttackUI();
     this.setupCamera();
     this.setupInput();
     this.setupCollisions();
@@ -539,6 +579,97 @@ export class SandboxScene extends Phaser.Scene {
 
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     body.setCircle(radius, offsetX, offsetY);
+
+    this.updateKillerHitbox();
+  }
+
+  /**
+   * Criação do Killer (Assassino):
+   * - Variante do próprio asset do sobrevivente ('survivor.png')
+   * - Tonalidade avermelhada e sombria via setTint(0xff3333)
+   * - Escala 28% maior que o Player para presença imponente
+   * - Hitbox proporcional e centralizada em (0.5, 0.5)
+   */
+  private createKiller(): void {
+    this.killer = this.physics.add.sprite(1500, 480, 'survivor', 0);
+    this.killer.setDepth(10);
+    this.killer.setOrigin(0.5, 0.5);
+
+    // Tonalidade avermelhada sombria (sangue)
+    this.killer.setTint(0xff3333);
+
+    this.updateKillerHitbox();
+    this.killer.setCollideWorldBounds(true);
+
+    // Gráfico de depuração de visão (área de detecção e perda)
+    this.killerVisionGraphic = this.add.graphics();
+    this.killerVisionGraphic.setDepth(5);
+  }
+
+  public updateKillerHitbox(): void {
+    if (!this.killer || !this.killer.body) return;
+
+    // Escala cerca de 28% maior que a do Player (ameaça imponente)
+    const killerScale = this.debugSettings.playerScale * 1.28;
+    this.killer.setScale(killerScale);
+
+    const frameW = survivorMeta.frameWidth || 704;
+    const frameH = survivorMeta.frameHeight || 768;
+    const radius = this.debugSettings.hitboxRadius;
+
+    const offsetX = (frameW * 0.5) - radius;
+    const offsetY = (frameH * 0.5) - radius;
+
+    const body = this.killer.body as Phaser.Physics.Arcade.Body;
+    body.setCircle(radius, offsetX, offsetY);
+  }
+
+  /**
+   * Interface de Aviso de Ataque (fixa na tela do jogador)
+   */
+  private createAttackUI(): void {
+    this.attackAlertUI = this.add.container(640, 50);
+    this.attackAlertUI.setScrollFactor(0);
+    this.attackAlertUI.setDepth(200);
+    this.attackAlertUI.setAlpha(0);
+
+    const bg = this.add.rectangle(0, 0, 360, 44, 0x3d0b0b, 0.92);
+    bg.setStrokeStyle(2, 0xff3333);
+
+    const text = this.add.text(0, 0, '⚠️ VOCÊ FOI ATACADO PELO ASSASSINO!', {
+      fontSize: '13px',
+      color: '#ffdddd',
+      fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    this.attackAlertUI.add([bg, text]);
+  }
+
+  private handleKillerAttack(): void {
+    const now = this.time.now;
+    if (now - this.lastAttackTime < 1400) return; // Cooldown de 1.4s para evitar spam
+    this.lastAttackTime = now;
+
+    // Flash vermelho rápido na tela
+    this.cameras.main.flash(260, 220, 20, 20);
+
+    // Exibir aviso no topo
+    this.showAttackToast();
+  }
+
+  private showAttackToast(): void {
+    if (!this.attackAlertUI) return;
+
+    this.attackAlertUI.setAlpha(1);
+    this.tweens.killTweensOf(this.attackAlertUI);
+
+    this.tweens.add({
+      targets: this.attackAlertUI,
+      alpha: 0,
+      duration: 800,
+      delay: 1400,
+      ease: 'Power2'
+    });
   }
 
   private setupInput(): void {
@@ -560,6 +691,12 @@ export class SandboxScene extends Phaser.Scene {
   private setupCollisions(): void {
     this.physics.add.collider(this.player, this.walls);
     this.physics.add.collider(this.player, this.obstacles);
+
+    if (this.killer) {
+      this.physics.add.collider(this.killer, this.walls);
+      this.physics.add.collider(this.killer, this.obstacles);
+      this.physics.add.collider(this.killer, this.player, this.handleKillerAttack, undefined, this);
+    }
   }
 
   /**
@@ -644,8 +781,25 @@ export class SandboxScene extends Phaser.Scene {
         }
       });
 
+    const killerFolder = this.gui.addFolder('Killer (IA)');
+    killerFolder
+      .add(this.debugSettings, 'killerSpeed', 80, 300, 5)
+      .name('Killer Speed');
+    killerFolder
+      .add(this.debugSettings, 'detectionRadius', 100, 600, 10)
+      .name('Detection Radius');
+    killerFolder
+      .add(this.debugSettings, 'showKillerVision')
+      .name('Debug Visão');
+    killerFolder
+      .add(this.debugSettings, 'killerAiEnabled')
+      .name('Ativar IA');
+    killerFolder.open();
+
     const monitorFolder = this.gui.addFolder('Telemetria em Tempo Real');
     monitorFolder.add(this.monitorState, 'worldSize').name('Tamanho Mapa').listen().disable();
+    monitorFolder.add(this.monitorState, 'killerState').name('Estado Killer').listen().disable();
+    monitorFolder.add(this.monitorState, 'killerDist').name('Dist. Killer').listen().disable();
     monitorFolder.add(this.monitorState, 'currentSpeed').name('Vel. Atual').listen().disable();
     monitorFolder.add(this.monitorState, 'isMoving').name('Movendo').listen().disable();
     monitorFolder.add(this.monitorState, 'isSprinting').name('Sprint (Shift)').listen().disable();
@@ -738,6 +892,18 @@ export class SandboxScene extends Phaser.Scene {
         if (typeof parsed.cameraZoom === 'number' && !isNaN(parsed.cameraZoom)) {
           this.debugSettings.cameraZoom = parsed.cameraZoom;
         }
+        if (typeof parsed.killerSpeed === 'number' && !isNaN(parsed.killerSpeed)) {
+          this.debugSettings.killerSpeed = parsed.killerSpeed;
+        }
+        if (typeof parsed.detectionRadius === 'number' && !isNaN(parsed.detectionRadius)) {
+          this.debugSettings.detectionRadius = parsed.detectionRadius;
+        }
+        if (typeof parsed.showKillerVision === 'boolean') {
+          this.debugSettings.showKillerVision = parsed.showKillerVision;
+        }
+        if (typeof parsed.killerAiEnabled === 'boolean') {
+          this.debugSettings.killerAiEnabled = parsed.killerAiEnabled;
+        }
       }
     } catch (e) {
       console.warn('Erro ao carregar debugSettings do localStorage:', e);
@@ -786,6 +952,7 @@ export class SandboxScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     this.handleMovement();
     this.handleRotation(delta);
+    this.handleKillerAI(delta);
     this.updateTelemetry();
   }
 
@@ -957,5 +1124,172 @@ export class SandboxScene extends Phaser.Scene {
 
     this.monitorState.playerScale = `${this.debugSettings.playerScale.toFixed(2)}x`;
     this.monitorState.hitboxPixels = `${Math.round(this.debugSettings.hitboxRadius * 2 * this.debugSettings.playerScale)}px`;
+  }
+
+  /**
+   * Inteligência Artificial do Killer (FSM):
+   * - PATROL: caminha lentamente até waypoints predefinidos / aleatórios com animação 'walk'.
+   * - CHASE: se distância até o Player < Detection Radius, corre perseguindo com animação 'run'.
+   * - LOSE: se distância > 1.5x Detection Radius, desiste e retorna para PATROL.
+   */
+  private handleKillerAI(delta: number): void {
+    if (!this.killer || !this.killer.body) return;
+
+    // Se IA desativada pelo painel de debug, pausar completamente o Killer
+    if (!this.debugSettings.killerAiEnabled) {
+      this.killer.setVelocity(0, 0);
+      if (this.killer.anims.isPlaying) {
+        this.killer.anims.stop();
+        this.killer.setFrame(0);
+      }
+      this.updateKillerVisionGraphic();
+      return;
+    }
+
+    const distToPlayer = Phaser.Math.Distance.Between(
+      this.killer.x,
+      this.killer.y,
+      this.player.x,
+      this.player.y
+    );
+
+    this.monitorState.killerDist = `${Math.round(distToPlayer)}px`;
+
+    const detectionRadius = this.debugSettings.detectionRadius;
+    const loseRadius = detectionRadius * 1.5;
+
+    // Transição de estados da FSM
+    if (this.killerState === 'PATROL') {
+      if (distToPlayer <= detectionRadius) {
+        this.killerState = 'CHASE';
+      }
+    } else if (this.killerState === 'CHASE') {
+      if (distToPlayer > loseRadius) {
+        this.killerState = 'PATROL';
+        this.patrolWaitTimer = 0;
+        this.pickNewPatrolTarget();
+      }
+    }
+
+    this.monitorState.killerState = this.killerState;
+
+    if (this.killerState === 'CHASE') {
+      // Estado CHASE: perseguir o Player em alta velocidade com animação 'run'
+      const dx = this.player.x - this.killer.x;
+      const dy = this.player.y - this.killer.y;
+      const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+      const speed = this.debugSettings.killerSpeed;
+
+      this.killer.setVelocity(moveVec.x * speed, moveVec.y * speed);
+
+      if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'run') {
+        this.killer.anims.play('run', true);
+      }
+
+      // Rotação suave apontando na direção do Player (- Math.PI / 2 porque os frames olham para sul)
+      const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+      this.rotateKillerTowards(targetAngle, delta, 14);
+    } else {
+      // Estado PATROL: patrulha lenta e cautelosa com animação 'walk'
+      const dx = this.patrolTarget.x - this.killer.x;
+      const dy = this.patrolTarget.y - this.killer.y;
+      const distToTarget = Math.sqrt(dx * dx + dy * dy);
+
+      if (distToTarget < 35) {
+        // Chegou ao waypoint temporário: aguarda brevemente
+        this.killer.setVelocity(0, 0);
+        if (this.killer.anims.isPlaying) {
+          this.killer.anims.stop();
+          this.killer.setFrame(0);
+        }
+
+        this.patrolWaitTimer += delta;
+        if (this.patrolWaitTimer >= 1800) {
+          this.patrolWaitTimer = 0;
+          this.pickNewPatrolTarget();
+        }
+      } else {
+        const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+        const patrolSpeed = this.debugSettings.killerSpeed * 0.45; // Caminhada lenta de patrulha
+
+        this.killer.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
+
+        if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'walk') {
+          this.killer.anims.play('walk', true);
+        }
+
+        const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+        this.rotateKillerTowards(targetAngle, delta, 5);
+      }
+    }
+
+    this.updateKillerVisionGraphic();
+  }
+
+  private pickNewPatrolTarget(): void {
+    const randomWp = Phaser.Utils.Array.GetRandom(this.patrolWaypoints);
+    const offsetX = Phaser.Math.Between(-30, 30);
+    const offsetY = Phaser.Math.Between(-30, 30);
+    this.patrolTarget.set(randomWp.x + offsetX, randomWp.y + offsetY);
+  }
+
+  private rotateKillerTowards(targetAngle: number, delta: number, turnSpeed: number): void {
+    let currentAngle = this.killer.rotation;
+    if (typeof currentAngle !== 'number' || isNaN(currentAngle) || !isFinite(currentAngle)) {
+      currentAngle = targetAngle;
+      this.killer.rotation = targetAngle;
+    }
+    currentAngle = Phaser.Math.Angle.Wrap(currentAngle);
+
+    const diff = Phaser.Math.Angle.Wrap(targetAngle - currentAngle);
+    const deltaSec = Math.min(delta / 1000, 0.1);
+    const maxStep = turnSpeed * deltaSec;
+
+    if (Math.abs(diff) <= maxStep) {
+      this.killer.rotation = targetAngle;
+    } else {
+      this.killer.rotation = Phaser.Math.Angle.Wrap(currentAngle + Math.sign(diff) * maxStep);
+    }
+  }
+
+  /**
+   * Renderização do Debug de Visão (Detection Radius e Lose Radius)
+   */
+  private updateKillerVisionGraphic(): void {
+    if (!this.killerVisionGraphic) return;
+    this.killerVisionGraphic.clear();
+
+    if (!this.debugSettings.showKillerVision || !this.killer) return;
+
+    const kx = this.killer.x;
+    const ky = this.killer.y;
+    const detectionRadius = this.debugSettings.detectionRadius;
+    const loseRadius = detectionRadius * 1.5;
+
+    // Círculo externo de perda de rastro (LOSE)
+    this.killerVisionGraphic.lineStyle(1.5, 0xf0c674, 0.25);
+    this.killerVisionGraphic.strokeCircle(kx, ky, loseRadius);
+
+    if (this.killerState === 'CHASE') {
+      // Círculo de Detecção em alerta vermelho sangue
+      this.killerVisionGraphic.fillStyle(0xff3333, 0.1);
+      this.killerVisionGraphic.fillCircle(kx, ky, detectionRadius);
+      this.killerVisionGraphic.lineStyle(2, 0xff2222, 0.7);
+      this.killerVisionGraphic.strokeCircle(kx, ky, detectionRadius);
+
+      // Linha de mira / perseguição direta até o jogador
+      this.killerVisionGraphic.lineStyle(2, 0xff2222, 0.6);
+      this.killerVisionGraphic.lineBetween(kx, ky, this.player.x, this.player.y);
+    } else {
+      // Círculo de Detecção em patrulha (laranja/âmbar sutil)
+      this.killerVisionGraphic.fillStyle(0xff8833, 0.05);
+      this.killerVisionGraphic.fillCircle(kx, ky, detectionRadius);
+      this.killerVisionGraphic.lineStyle(1.5, 0xff8833, 0.4);
+      this.killerVisionGraphic.strokeCircle(kx, ky, detectionRadius);
+
+      // Linha sutil até o ponto de patrulha
+      this.killerVisionGraphic.lineStyle(1, 0x88bbff, 0.25);
+      this.killerVisionGraphic.lineBetween(kx, ky, this.patrolTarget.x, this.patrolTarget.y);
+    }
   }
 }
