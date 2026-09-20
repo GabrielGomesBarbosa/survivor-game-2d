@@ -70,6 +70,10 @@ export class SandboxScene extends Phaser.Scene {
   private patrolPath: Array<{ x: number; y: number }> = [];
   private patrolPathIndex = 0;
 
+  // Trava de integridade contra tunelamento em paredes
+  private lastSafePlayerX = 1280;
+  private lastSafePlayerY = 960;
+
   // Pontos de patrulha navegáveis e desobstruídos pelo complexo (corredores de 192px/256px e salas amplas)
   private patrolWaypoints: Array<{ x: number; y: number }> = [
     { x: 1280, y: 480 },  // Corredor Norte Centro
@@ -119,6 +123,14 @@ export class SandboxScene extends Phaser.Scene {
   };
 
   private gui!: GUI;
+  private hudFpsVal: HTMLElement | null = null;
+  private hudKillerState: HTMLElement | null = null;
+  private hudKillerDist: HTMLElement | null = null;
+  private hudFpsDot: HTMLElement | null = null;
+
+  private onWindowResize = (): void => {
+    this.scale.refresh();
+  };
 
   // Salvar última posição válida do ponteiro para evitar rotações espúrias
   private lastTargetAngle = 0;
@@ -190,6 +202,15 @@ export class SandboxScene extends Phaser.Scene {
     this.aStarGraphic = this.add.graphics();
     this.aStarGraphic.setDepth(6);
 
+    // Configuração anti-tunelamento para física de alta precisão
+    this.physics.world.OVERLAP_BIAS = 16;
+    this.physics.world.TILE_BIAS = 32;
+
+    // Monitoramento contínuo pós-física para garantir que o Player nunca atravesse paredes
+    this.events.on(Phaser.Scenes.Events.POST_UPDATE, () => {
+      this.enforcePlayerWallBounds();
+    });
+
     // Sincronizar visualização de física com a configuração carregada do localStorage
     this.physics.world.drawDebug = this.debugSettings.showPhysicsDebug;
 
@@ -200,12 +221,21 @@ export class SandboxScene extends Phaser.Scene {
       this.game.canvas.addEventListener('pointerdown', () => {
         this.game.canvas.focus();
       });
+      const viewport = document.getElementById('game-viewport');
+      if (viewport) {
+        viewport.addEventListener('pointerdown', () => {
+          this.game.canvas.focus();
+        });
+      }
     }
+
+    window.addEventListener('resize', this.onWindowResize);
 
     this.events.on(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('keydown', this.onWindowKeyDown, true);
       window.removeEventListener('keyup', this.onWindowKeyUp, true);
       window.removeEventListener('blur', this.onWindowBlur);
+      window.removeEventListener('resize', this.onWindowResize);
       if (this.gui) {
         this.gui.destroy();
       }
@@ -653,6 +683,8 @@ export class SandboxScene extends Phaser.Scene {
 
     this.updatePlayerHitbox();
     this.player.setCollideWorldBounds(true);
+    this.player.setBounce(0, 0);
+    this.player.setPushable(false);
 
     this.lastTargetAngle = 0;
   }
@@ -701,6 +733,7 @@ export class SandboxScene extends Phaser.Scene {
 
     this.updateKillerHitbox();
     this.killer.setCollideWorldBounds(true);
+    this.killer.setBounce(0, 0);
 
     // Gráfico de depuração de visão (área de detecção e perda)
     this.killerVisionGraphic = this.add.graphics();
@@ -773,6 +806,87 @@ export class SandboxScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * Tratamento de Colisão Sólida e Não-Elástica entre Killer e Player:
+   * - Registra ataque com cooldown e aviso visual na tela.
+   * - Elimina empurrão físico contínuo/elástico do Arcade Physics contra o cenário.
+   * - O Player NUNCA é empurrado em direção às paredes pelo Killer.
+   * - Anula velocidade frontal de aproximação de ambos, bloqueando a passagem sem tunelamento.
+   */
+  private handleKillerPlayerCollision(): void {
+    if (!this.player || !this.killer || !this.player.body || !this.killer.body) return;
+
+    this.handleKillerAttack();
+
+    const playerRadius = this.debugSettings.hitboxRadius * this.debugSettings.playerScale;
+    const killerRadius = this.debugSettings.hitboxRadius * this.debugSettings.playerScale * 1.28;
+    const minDistance = playerRadius + killerRadius;
+
+    const dx = this.killer.x - this.player.x;
+    const dy = this.killer.y - this.player.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < minDistance) {
+      const overlap = minDistance - dist;
+      const nx = dist > 0.001 ? dx / dist : 0;
+      const ny = dist > 0.001 ? dy / dist : -1;
+
+      // Desloca o Killer suavemente para fora do Player sem empurrá-lo para dentro de paredes
+      const targetKillerX = this.killer.x + nx * overlap;
+      const targetKillerY = this.killer.y + ny * overlap;
+      const kCol = Math.floor(targetKillerX / 64);
+      const kRow = Math.floor(targetKillerY / 64);
+
+      if (kRow >= 0 && kRow < 30 && kCol >= 0 && kCol < 40 && this.navGrid[kRow]?.[kCol] === 0) {
+        this.killer.x = targetKillerX;
+        this.killer.y = targetKillerY;
+      }
+      (this.killer.body as Phaser.Physics.Arcade.Body).updateCenter();
+
+      // Anula componente de velocidade do Killer que aponta contra o Player
+      const kBody = this.killer.body as Phaser.Physics.Arcade.Body;
+      const kVel = kBody.velocity;
+      const kSpeedTowards = kVel.x * (-nx) + kVel.y * (-ny);
+      if (kSpeedTowards > 0) {
+        kVel.x -= (-nx) * kSpeedTowards;
+        kVel.y -= (-ny) * kSpeedTowards;
+      }
+
+      // Bloqueia avanço do Player contra o Killer (sólido intransponível)
+      const pBody = this.player.body as Phaser.Physics.Arcade.Body;
+      const pVel = pBody.velocity;
+      const pSpeedTowards = pVel.x * nx + pVel.y * ny;
+      if (pSpeedTowards > 0) {
+        pVel.x -= nx * pSpeedTowards;
+        pVel.y -= ny * pSpeedTowards;
+      }
+    }
+  }
+
+  /**
+   * Guarda de Integridade Física do Jogador:
+   * - Executada a cada frame no evento POST_UPDATE (após todo o processamento de física).
+   * - Verifica a posição central do jogador na matriz de navegação (navGrid).
+   * - Se o jogador estiver em uma célula livre, atualiza a última posição segura conhecida.
+   * - Se detectar penetração em célula de parede ou fora dos limites do mapa, restaura instantaneamente
+   *   a posição do jogador para a última posição segura com velocidade zerada, impedindo 100% o tunelamento.
+   */
+  private enforcePlayerWallBounds(): void {
+    if (!this.player || !this.player.body || this.navGrid.length === 0) return;
+
+    const col = Math.floor(this.player.x / 64);
+    const row = Math.floor(this.player.y / 64);
+
+    if (row >= 0 && row < 30 && col >= 0 && col < 40 && this.navGrid[row]?.[col] === 0) {
+      this.lastSafePlayerX = this.player.x;
+      this.lastSafePlayerY = this.player.y;
+    } else {
+      this.player.setPosition(this.lastSafePlayerX, this.lastSafePlayerY);
+      this.player.setVelocity(0, 0);
+      (this.player.body as Phaser.Physics.Arcade.Body).updateCenter();
+    }
+  }
+
   private setupInput(): void {
     if (this.input.keyboard) {
       this.keyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
@@ -796,7 +910,13 @@ export class SandboxScene extends Phaser.Scene {
     if (this.killer) {
       this.physics.add.collider(this.killer, this.walls);
       this.physics.add.collider(this.killer, this.obstacles);
-      this.physics.add.collider(this.killer, this.player, this.handleKillerAttack, undefined, this);
+      this.physics.add.overlap(
+        this.killer,
+        this.player,
+        this.handleKillerPlayerCollision,
+        undefined,
+        this
+      );
     }
   }
 
@@ -808,111 +928,189 @@ export class SandboxScene extends Phaser.Scene {
    * - Giro Instantâneo
    */
   private setupDebugPanel(): void {
-    this.gui = new GUI({ title: '⚙️ Sandbox Debug' });
-    this.gui.domElement.style.position = 'absolute';
-    this.gui.domElement.style.top = '12px';
-    this.gui.domElement.style.right = '12px';
-    this.gui.domElement.style.zIndex = '100';
+    const container = document.getElementById('debug-gui-container');
+    this.gui = new GUI({
+      container: container || undefined,
+      title: '⚙️ Sandbox Debug',
+      width: 350
+    });
 
     const speedsFolder = this.gui.addFolder('Velocidades & Movimento');
-    speedsFolder
-      .add(this.debugSettings, 'walkSpeed', 50, 400, 5)
-      .name('Walk Speed');
-    speedsFolder
-      .add(this.debugSettings, 'runSpeed', 100, 600, 5)
-      .name('Run Speed');
-    speedsFolder
-      .add(this.debugSettings, 'turnSpeed', 1, 60, 1)
-      .name('Turn Speed')
-      .onChange((val: number) => {
-        this.debugSettings.turnSpeed = Number(val) || 18;
-      });
-    speedsFolder
-      .add(this.debugSettings, 'playerScale', 0.05, 1.0, 0.01)
-      .name('Player Scale')
-      .onChange((val: number) => {
-        this.debugSettings.playerScale = Number(val) || 0.25;
-        this.updatePlayerHitbox();
-      });
-    speedsFolder
-      .add(this.debugSettings, 'instantTurn')
-      .name('Giro Instantâneo')
-      .onChange((val: boolean) => {
-        this.debugSettings.instantTurn = Boolean(val);
-      });
+    this.attachTooltip(
+      speedsFolder.add(this.debugSettings, 'walkSpeed', 50, 400, 5).name('Walk Speed'),
+      'Velocidade base de caminhada do Player em pixels/segundo (WASD normal).'
+    );
+    this.attachTooltip(
+      speedsFolder.add(this.debugSettings, 'runSpeed', 100, 600, 5).name('Run Speed'),
+      'Velocidade máxima de corrida ao pressionar a tecla Shift em pixels/segundo.'
+    );
+    this.attachTooltip(
+      speedsFolder
+        .add(this.debugSettings, 'turnSpeed', 1, 60, 1)
+        .name('Turn Speed')
+        .onChange((val: number) => {
+          this.debugSettings.turnSpeed = Number(val) || 18;
+        }),
+      'Suavidade e velocidade de rotação do corpo em direção ao mouse.'
+    );
+    this.attachTooltip(
+      speedsFolder
+        .add(this.debugSettings, 'playerScale', 0.05, 1.0, 0.01)
+        .name('Player Scale')
+        .onChange((val: number) => {
+          this.debugSettings.playerScale = Number(val) || 0.25;
+          this.updatePlayerHitbox();
+        }),
+      'Fator multiplicador da escala gráfica e física do Player (0.25 calibrado para os corredores).'
+    );
+    this.attachTooltip(
+      speedsFolder
+        .add(this.debugSettings, 'instantTurn')
+        .name('Giro Instantâneo')
+        .onChange((val: boolean) => {
+          this.debugSettings.instantTurn = Boolean(val);
+        }),
+      'Desativa o amortecimento angular, virando o corpo do Player instantaneamente para a mira.'
+    );
 
     const animFolder = this.gui.addFolder('Taxa de Animações (FPS)');
-    animFolder
-      .add(this.debugSettings, 'walkAnimFrameRate', 2, 24, 1)
-      .name('Walk Anim FPS')
-      .onChange((val: number) => {
-        const anim = this.anims.get('walk');
-        if (anim) anim.frameRate = val;
-      });
-    animFolder
-      .add(this.debugSettings, 'runAnimFrameRate', 2, 30, 1)
-      .name('Run Anim FPS')
-      .onChange((val: number) => {
-        const anim = this.anims.get('run');
-        if (anim) anim.frameRate = val;
-      });
+    this.attachTooltip(
+      animFolder
+        .add(this.debugSettings, 'walkAnimFrameRate', 2, 24, 1)
+        .name('Walk Anim FPS')
+        .onChange((val: number) => {
+          const anim = this.anims.get('walk');
+          if (anim) anim.frameRate = val;
+        }),
+      'Taxa de quadros por segundo da animação de caminhada ("walk").'
+    );
+    this.attachTooltip(
+      animFolder
+        .add(this.debugSettings, 'runAnimFrameRate', 2, 30, 1)
+        .name('Run Anim FPS')
+        .onChange((val: number) => {
+          const anim = this.anims.get('run');
+          if (anim) anim.frameRate = val;
+        }),
+      'Taxa de quadros por segundo da animação de corrida rápida ("run").'
+    );
 
     const displayFolder = this.gui.addFolder('Física & Renderização');
-    displayFolder
-      .add(this.debugSettings, 'cameraZoom', 0.4, 1.5, 0.05)
-      .name('Camera Zoom')
-      .onChange((val: number) => {
-        this.debugSettings.cameraZoom = Number(val) || 1.0;
-        this.cameras.main.setZoom(this.debugSettings.cameraZoom);
-      });
-    displayFolder
-      .add(this.debugSettings, 'hitboxRadius', 150, 350, 5)
-      .name('Raio Base Hitbox')
-      .onChange((val: number) => {
-        this.debugSettings.hitboxRadius = Number(val) || 265;
-        this.updatePlayerHitbox();
-      });
-    displayFolder
-      .add(this.debugSettings, 'showPhysicsDebug')
-      .name('Visualizar Colisão')
-      .onChange((enabled: boolean) => {
-        this.physics.world.drawDebug = enabled;
-        if (!enabled && this.physics.world.debugGraphic) {
-          this.physics.world.debugGraphic.clear();
-        }
-      });
+    this.attachTooltip(
+      displayFolder
+        .add(this.debugSettings, 'cameraZoom', 0.4, 1.5, 0.05)
+        .name('Camera Zoom')
+        .onChange((val: number) => {
+          this.debugSettings.cameraZoom = Number(val) || 1.0;
+          this.cameras.main.setZoom(this.debugSettings.cameraZoom);
+        }),
+      'Nível de aproximação/afastamento da câmera virtual centrada no sobrevivente.'
+    );
+    this.attachTooltip(
+      displayFolder
+        .add(this.debugSettings, 'hitboxRadius', 150, 350, 5)
+        .name('Raio Base Hitbox')
+        .onChange((val: number) => {
+          this.debugSettings.hitboxRadius = Number(val) || 265;
+          this.updatePlayerHitbox();
+        }),
+      'Raio base do círculo de colisão em pixels da textura original antes do scaling.'
+    );
+    this.attachTooltip(
+      displayFolder
+        .add(this.debugSettings, 'showPhysicsDebug')
+        .name('Visualizar Colisão')
+        .onChange((enabled: boolean) => {
+          this.physics.world.drawDebug = enabled;
+          if (!enabled && this.physics.world.debugGraphic) {
+            this.physics.world.debugGraphic.clear();
+          }
+        }),
+      'Desenha os contornos de colisão Arcade (hitbox circular do Player/Killer e quinas).'
+    );
 
     const killerFolder = this.gui.addFolder('Killer (IA)');
-    killerFolder
-      .add(this.debugSettings, 'killerSpeed', 80, 300, 5)
-      .name('Killer Speed');
-    killerFolder
-      .add(this.debugSettings, 'detectionRadius', 100, 600, 10)
-      .name('Detection Radius');
-    killerFolder
-      .add(this.debugSettings, 'showKillerVision')
-      .name('Debug Visão');
-    killerFolder
-      .add(this.debugSettings, 'showAStarPath')
-      .name('Mostrar Rota A*');
-    killerFolder
-      .add(this.debugSettings, 'killerAiEnabled')
-      .name('Ativar IA');
+    this.attachTooltip(
+      killerFolder
+        .add(this.debugSettings, 'killerSpeed', 80, 300, 5)
+        .name('Killer Speed'),
+      'Velocidade de corrida do Assassino no estado de perseguição (CHASE) em px/s.'
+    );
+    this.attachTooltip(
+      killerFolder
+        .add(this.debugSettings, 'detectionRadius', 100, 600, 10)
+        .name('Detection Radius'),
+      'Distância máxima de percepção na qual o Killer avista o Player e inicia perseguição.'
+    );
+    this.attachTooltip(
+      killerFolder
+        .add(this.debugSettings, 'showKillerVision')
+        .name('Debug Visão'),
+      'Renderiza círculos de detecção (laranja em patrulha, vermelho em perseguição) e linha de mira.'
+    );
+    this.attachTooltip(
+      killerFolder
+        .add(this.debugSettings, 'showAStarPath')
+        .name('Mostrar Rota A*'),
+      'Traça no mapa a linha ciano e balizas da rota contornando paredes calculada pelo A* (EasyStar).'
+    );
+    this.attachTooltip(
+      killerFolder
+        .add(this.debugSettings, 'killerAiEnabled')
+        .name('Ativar IA'),
+      'Habilita ou congela completamente a inteligência artificial e locomoção do Assassino.'
+    );
     killerFolder.open();
 
     const monitorFolder = this.gui.addFolder('Telemetria em Tempo Real');
-    monitorFolder.add(this.monitorState, 'worldSize').name('Tamanho Mapa').listen().disable();
-    monitorFolder.add(this.monitorState, 'killerState').name('Estado Killer').listen().disable();
-    monitorFolder.add(this.monitorState, 'killerDist').name('Dist. Killer').listen().disable();
-    monitorFolder.add(this.monitorState, 'currentSpeed').name('Vel. Atual').listen().disable();
-    monitorFolder.add(this.monitorState, 'isMoving').name('Movendo').listen().disable();
-    monitorFolder.add(this.monitorState, 'isSprinting').name('Sprint (Shift)').listen().disable();
-    monitorFolder.add(this.monitorState, 'rotationDeg').name('Ângulo').listen().disable();
-    monitorFolder.add(this.monitorState, 'playerScale').name('Escala Atual').listen().disable();
-    monitorFolder.add(this.monitorState, 'hitboxPixels').name('Hitbox Diâmetro').listen().disable();
-    monitorFolder.add(this.monitorState, 'playerX').name('Pos X').listen().disable();
-    monitorFolder.add(this.monitorState, 'playerY').name('Pos Y').listen().disable();
-    monitorFolder.add(this.monitorState, 'fps').name('Game FPS').listen().disable();
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'worldSize').name('Tamanho Mapa').listen().disable(),
+      'Dimensões totais da instalação em pixels (largura x altura).'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'killerState').name('Estado Killer').listen().disable(),
+      'Estado da máquina FSM do Killer: PATROL (patrulha cautelosa) ou CHASE (perseguição ativa).'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'killerDist').name('Dist. Killer').listen().disable(),
+      'Distância linear euclidiana direta entre o Player e o Killer em pixels.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'currentSpeed').name('Vel. Atual').listen().disable(),
+      'Velocidade vetorial instantânea do Player em pixels por segundo.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'isMoving').name('Movendo').listen().disable(),
+      'Indica se o jogador está se deslocando no momento via WASD.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'isSprinting').name('Sprint (Shift)').listen().disable(),
+      'Indica se o jogador está correndo com a tecla Shift pressionada.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'rotationDeg').name('Ângulo').listen().disable(),
+      'Orientação angular do personagem em graus (0° a 360°) apontando para o cursor.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'playerScale').name('Escala Atual').listen().disable(),
+      'Multiplicador de escala atual do Player (definido no slider de escala).'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'hitboxPixels').name('Hitbox Diâmetro').listen().disable(),
+      'Diâmetro real calibrado do círculo de colisão física Arcade em pixels.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'playerX').name('Pos X').listen().disable(),
+      'Coordenada horizontal X do centro do Player no cenário.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'playerY').name('Pos Y').listen().disable(),
+      'Coordenada vertical Y do centro do Player no cenário.'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'fps').name('Game FPS').listen().disable(),
+      'Taxa real de quadros por segundo gerada pelo loop do Phaser.'
+    );
 
     speedsFolder.open();
     displayFolder.open();
@@ -954,7 +1152,71 @@ export class SandboxScene extends Phaser.Scene {
     const actions = {
       resetDefaults: () => this.resetSettingsToDefaults()
     };
-    this.gui.add(actions, 'resetDefaults').name('🔄 Restaurar Padrões');
+    this.attachTooltip(
+      this.gui.add(actions, 'resetDefaults').name('🔄 Restaurar Padrões'),
+      'Restaura todas as opções de velocidade, zoom, hitbox e IA para os valores padrão.'
+    );
+  }
+
+  /**
+   * Vincula tooltip informativo e ícone de ajuda [?] ao controlador do lil-gui
+   */
+  private attachTooltip(controller: any, description: string): any {
+    if (!controller || !controller.domElement) return controller;
+
+    controller.domElement.setAttribute('data-tooltip', description);
+    controller.domElement.setAttribute('title', description);
+
+    if (controller.$name) {
+      const help = document.createElement('span');
+      help.className = 'debug-help-icon';
+      help.textContent = '?';
+      help.setAttribute('aria-label', description);
+      controller.$name.appendChild(help);
+    }
+
+    controller.domElement.addEventListener('mouseenter', (e: MouseEvent) => {
+      const title = controller._name || controller.property || 'Configuração';
+      this.showTooltip(e, title, description);
+    });
+
+    controller.domElement.addEventListener('mouseleave', () => {
+      this.hideTooltip();
+    });
+
+    return controller;
+  }
+
+  private showTooltip(e: MouseEvent, title: string, text: string): void {
+    const tooltip = document.getElementById('debug-tooltip');
+    if (!tooltip) return;
+
+    tooltip.innerHTML = `<strong>${title}</strong><span>${text}</span>`;
+    tooltip.classList.add('visible');
+
+    const target = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+
+    let top = target.top + (target.height - tooltipRect.height) / 2;
+    let left = target.left - tooltipRect.width - 12;
+
+    if (top < 12) top = 12;
+    if (top + tooltipRect.height > window.innerHeight - 12) {
+      top = window.innerHeight - tooltipRect.height - 12;
+    }
+    if (left < 12) {
+      left = target.right + 12;
+    }
+
+    tooltip.style.top = `${top}px`;
+    tooltip.style.left = `${left}px`;
+  }
+
+  private hideTooltip(): void {
+    const tooltip = document.getElementById('debug-tooltip');
+    if (tooltip) {
+      tooltip.classList.remove('visible');
+    }
   }
 
   /**
@@ -1225,15 +1487,45 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   private updateTelemetry(): void {
+    const fps = Math.round(this.game.loop.actualFps);
     this.monitorState.playerX = this.player.x.toFixed(1);
     this.monitorState.playerY = this.player.y.toFixed(1);
-    this.monitorState.fps = Math.round(this.game.loop.actualFps);
+    this.monitorState.fps = fps;
 
     const deg = Math.round(Phaser.Math.RadToDeg(this.player.rotation));
     this.monitorState.rotationDeg = `${deg}°`;
 
     this.monitorState.playerScale = `${this.debugSettings.playerScale.toFixed(2)}x`;
     this.monitorState.hitboxPixels = `${Math.round(this.debugSettings.hitboxRadius * 2 * this.debugSettings.playerScale)}px`;
+
+    // Atualização em tempo real do card HUD na tela do jogo
+    if (!this.hudFpsVal) {
+      this.hudFpsVal = document.getElementById('hud-fps-val');
+      this.hudKillerState = document.getElementById('hud-killer-state');
+      this.hudKillerDist = document.getElementById('hud-killer-dist');
+      this.hudFpsDot = document.getElementById('hud-fps-dot');
+    }
+
+    if (this.hudFpsVal) {
+      this.hudFpsVal.textContent = `${fps}`;
+    }
+    if (this.hudFpsDot) {
+      if (fps >= 55) {
+        this.hudFpsDot.className = 'hud-indicator-dot dot-good';
+      } else if (fps >= 30) {
+        this.hudFpsDot.className = 'hud-indicator-dot dot-warn';
+      } else {
+        this.hudFpsDot.className = 'hud-indicator-dot dot-bad';
+      }
+    }
+    if (this.hudKillerState) {
+      this.hudKillerState.textContent = this.killerState;
+      this.hudKillerState.className =
+        this.killerState === 'CHASE' ? 'hud-val state-chase' : 'hud-val state-patrol';
+    }
+    if (this.hudKillerDist) {
+      this.hudKillerDist.textContent = this.monitorState.killerDist || '--';
+    }
   }
 
   /**
@@ -1422,32 +1714,51 @@ export class SandboxScene extends Phaser.Scene {
     this.monitorState.killerState = this.killerState;
 
     if (this.killerState === 'CHASE') {
-      // 1. Verificar linha direta de visão (Line of Sight)
-      this.hasDirectLOS = this.hasLineOfSight(
-        this.killer.x,
-        this.killer.y,
-        this.player.x,
-        this.player.y
-      );
-
       const speed = this.debugSettings.killerSpeed;
+      const playerRadius = this.debugSettings.hitboxRadius * this.debugSettings.playerScale;
+      const killerRadius = this.debugSettings.hitboxRadius * this.debugSettings.playerScale * 1.28;
+      const contactDist = playerRadius + killerRadius + 6;
+      const isRecoveringFromAttack = this.time.now - this.lastAttackTime < 450;
 
-      if (this.hasDirectLOS) {
-        // Linha reta desobstruída: perseguição direta em alta velocidade
-        this.currentChasePath = [];
-        const dx = this.player.x - this.killer.x;
-        const dy = this.player.y - this.killer.y;
-        const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-
-        this.killer.setVelocity(moveVec.x * speed, moveVec.y * speed);
-
-        if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'run') {
-          this.killer.anims.play('run', true);
+      if (distToPlayer <= contactDist || isRecoveringFromAttack) {
+        // Ao alcançar o Player ou durante a recuperação do golpe, cessa a propulsão frontal
+        // para não empurrar o jogador contra quinas/paredes
+        this.hasDirectLOS = true;
+        this.killer.setVelocity(0, 0);
+        if (this.killer.anims.isPlaying) {
+          this.killer.anims.stop();
+          this.killer.setFrame(0);
         }
 
+        const dx = this.player.x - this.killer.x;
+        const dy = this.player.y - this.killer.y;
         const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
         this.rotateKillerTowards(targetAngle, delta, 14);
       } else {
+        // 1. Verificar linha direta de visão (Line of Sight)
+        this.hasDirectLOS = this.hasLineOfSight(
+          this.killer.x,
+          this.killer.y,
+          this.player.x,
+          this.player.y
+        );
+
+        if (this.hasDirectLOS) {
+          // Linha reta desobstruída: perseguição direta em alta velocidade
+          this.currentChasePath = [];
+          const dx = this.player.x - this.killer.x;
+          const dy = this.player.y - this.killer.y;
+          const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+
+          this.killer.setVelocity(moveVec.x * speed, moveVec.y * speed);
+
+          if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'run') {
+            this.killer.anims.play('run', true);
+          }
+
+          const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+          this.rotateKillerTowards(targetAngle, delta, 14);
+        } else {
         // Linha de visão bloqueada por paredes: Perseguição inteligente via A*
         this.pathRecalcTimer += delta;
 
@@ -1501,7 +1812,8 @@ export class SandboxScene extends Phaser.Scene {
           this.killer.setVelocity(moveVec.x * speed * 0.5, moveVec.y * speed * 0.5);
         }
       }
-    } else {
+    }
+  } else {
       // Estado PATROL: patrulha cautelosa
       const distToTarget = Phaser.Math.Distance.Between(
         this.killer.x,

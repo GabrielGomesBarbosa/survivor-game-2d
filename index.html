@@ -11,59 +11,426 @@
         box-sizing: border-box;
       }
       body {
-        background-color: #0b0c10;
+        background-color: #08090d;
         color: #c5c6c7;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
         overflow: hidden;
         width: 100vw;
         height: 100vh;
-        display: flex;
-        justify-content: center;
-        align-items: center;
         user-select: none;
       }
-      #game-container {
-        position: relative;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 1px 1px rgba(255, 255, 255, 0.05);
-        border-radius: 4px;
+
+      /* Layout Principal em 2 Colunas */
+      #app {
+        display: flex;
+        flex-direction: row;
+        width: 100vw;
+        height: 100vh;
         overflow: hidden;
       }
+
+      /* Lado Esquerdo: Área do Jogo */
+      #game-viewport {
+        flex: 1;
+        height: 100vh;
+        min-width: 0;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at center, #131622 0%, #08090d 100%);
+        overflow: hidden;
+      }
+
+      #game-container {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+
       canvas {
         display: block;
+        border-radius: 4px;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.08);
         outline: none;
       }
-      #hud-instructions {
+
+      /* Card Superior de Telemetria e FPS */
+      #hud-telemetry {
         position: absolute;
-        bottom: 12px;
+        top: 14px;
         left: 16px;
-        background: rgba(15, 17, 23, 0.75);
-        backdrop-filter: blur(6px);
-        padding: 8px 14px;
-        border-radius: 6px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        font-size: 13px;
-        line-height: 1.5;
+        background: rgba(13, 16, 24, 0.85);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        padding: 7px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 12px;
         color: #d1d5db;
         pointer-events: none;
-        z-index: 10;
+        z-index: 20;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
       }
+
+      .hud-pill {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .hud-indicator-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+        transition: background-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .dot-good {
+        background-color: #10b981;
+        box-shadow: 0 0 8px #10b981;
+      }
+      .dot-warn {
+        background-color: #f59e0b;
+        box-shadow: 0 0 8px #f59e0b;
+      }
+      .dot-bad {
+        background-color: #ef4444;
+        box-shadow: 0 0 8px #ef4444;
+      }
+
+      .hud-separator {
+        width: 1px;
+        height: 14px;
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      .hud-label {
+        color: #94a3b8;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .hud-val {
+        font-weight: 700;
+        color: #f3f4f6;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .state-patrol {
+        color: #fbbf24;
+      }
+
+      .state-chase {
+        color: #ef4444;
+        animation: pulse-red 1s infinite alternate;
+      }
+
+      @keyframes pulse-red {
+        from { text-shadow: 0 0 2px #ef4444; }
+        to { text-shadow: 0 0 8px #ef4444; }
+      }
+
+      .physics-tag {
+        color: #38bdf8;
+        font-size: 11px;
+      }
+
+      /* Banner Inferior de Instruções */
+      #hud-instructions {
+        position: absolute;
+        bottom: 14px;
+        left: 16px;
+        background: rgba(13, 16, 24, 0.85);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: #cbd5e1;
+        pointer-events: none;
+        z-index: 20;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      }
+
       #hud-instructions kbd {
-        background: #1f2937;
-        border: 1px solid #374151;
+        background: #1e2535;
+        border: 1px solid #334155;
         padding: 2px 6px;
         border-radius: 4px;
         font-size: 11px;
         font-weight: bold;
-        color: #f3f4f6;
+        color: #f8fafc;
+        font-family: inherit;
+      }
+
+      /* Lado Direito: Sidebar Fixa de Debug */
+      #debug-sidebar {
+        width: 350px;
+        min-width: 350px;
+        max-width: 350px;
+        height: 100vh;
+        background: #0f121a;
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        overflow-x: hidden;
+        z-index: 30;
+        box-shadow: -6px 0 28px rgba(0, 0, 0, 0.5);
+      }
+
+      #debug-sidebar::-webkit-scrollbar {
+        width: 6px;
+      }
+      #debug-sidebar::-webkit-scrollbar-track {
+        background: rgba(0, 0, 0, 0.25);
+      }
+      #debug-sidebar::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 3px;
+      }
+      #debug-sidebar::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.25);
+      }
+
+      /* Cabeçalho da Sidebar */
+      .sidebar-header {
+        padding: 16px 16px 12px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        background: #131722;
+        flex-shrink: 0;
+      }
+
+      .sidebar-badge-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      .sidebar-badge {
+        background: #1e293b;
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        font-size: 10px;
+        font-weight: 700;
+        padding: 2px 7px;
+        border-radius: 4px;
+        letter-spacing: 0.8px;
+      }
+
+      .sidebar-status-tag {
+        font-size: 11px;
+        color: #10b981;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .sidebar-status-dot {
+        width: 6px;
+        height: 6px;
+        background: #10b981;
+        border-radius: 50%;
+        box-shadow: 0 0 6px #10b981;
+      }
+
+      .sidebar-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #f8fafc;
+        margin-bottom: 4px;
+      }
+
+      .sidebar-desc {
+        font-size: 11.5px;
+        color: #94a3b8;
+        line-height: 1.45;
+      }
+
+      .sidebar-desc strong {
+        color: #38bdf8;
+      }
+
+      /* Container do lil-gui dentro da Sidebar */
+      #debug-gui-container {
+        width: 100%;
+        flex: 1;
+      }
+
+      /* Customização do lil-gui para encaixe perfeito */
+      #debug-gui-container .lil-gui {
+        --background-color: #0f121a;
+        --text-color: #cbd5e1;
+        --title-background-color: #161b26;
+        --title-text-color: #f1f5f9;
+        --widget-color: #1f2533;
+        --hover-color: #2b3345;
+        --focus-color: #2563eb;
+        --number-color: #38bdf8;
+        --string-color: #4ade80;
+        --font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+        --font-size: 11.5px;
+        --input-font-size: 11.5px;
+        --padding: 5px;
+        --spacing: 4px;
+        --widget-height: 22px;
+        --name-width: 48%;
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+        width: 100% !important;
+      }
+
+      #debug-gui-container .lil-gui.lil-root > .lil-title {
+        display: none; /* Oculta a barra de título raiz do lil-gui pois já temos a sidebar-header */
+      }
+
+      #debug-gui-container .lil-gui .lil-title {
+        font-weight: 600;
+        letter-spacing: 0.3px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      #debug-gui-container .lil-gui .controller {
+        transition: background-color 0.12s ease;
+      }
+
+      #debug-gui-container .lil-gui .controller:hover {
+        background-color: rgba(255, 255, 255, 0.025);
+      }
+
+      /* Ícone de Ajuda [?] em cada parâmetro */
+      .debug-help-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 13px;
+        height: 13px;
+        margin-left: 5px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.1);
+        color: #94a3b8;
+        font-size: 9px;
+        font-weight: 700;
+        cursor: help;
+        vertical-align: middle;
+        transition: all 0.15s ease;
+        line-height: 1;
+        user-select: none;
+      }
+
+      .debug-help-icon:hover {
+        background: #2563eb;
+        color: #ffffff;
+        transform: scale(1.18);
+        box-shadow: 0 0 6px rgba(37, 99, 235, 0.6);
+      }
+
+      /* Tooltip Flutuante Explicativo */
+      .debug-tooltip {
+        position: fixed;
+        z-index: 1000;
+        background: rgba(13, 16, 24, 0.96);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        border-radius: 6px;
+        padding: 9px 13px;
+        max-width: 270px;
+        color: #cbd5e1;
+        font-size: 11.5px;
+        line-height: 1.45;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05);
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        transform: translateY(4px);
+      }
+
+      .debug-tooltip.visible {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+      }
+
+      .debug-tooltip strong {
+        display: block;
+        color: #38bdf8;
+        font-size: 12px;
+        margin-bottom: 4px;
+        font-weight: 600;
       }
     </style>
   </head>
   <body>
-    <div id="game-container">
-      <div id="hud-instructions">
-        <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> Mover &bull; <kbd>Shift</kbd> Correr &bull; <kbd>Mouse</kbd> Olhar / Mirar</div>
-      </div>
+    <div id="app">
+      <!-- Lado Esquerdo: Área Dedicada do Jogo (Canvas Phaser) -->
+      <main id="game-viewport">
+        <div id="game-container">
+          <!-- Card de FPS e Telemetria em Tempo Real (Canto Superior Esquerdo) -->
+          <div id="hud-telemetry">
+            <div class="hud-pill">
+              <span id="hud-fps-dot" class="hud-indicator-dot dot-good"></span>
+              <span class="hud-label">FPS:</span>
+              <span id="hud-fps-val" class="hud-val">--</span>
+            </div>
+            <div class="hud-separator"></div>
+            <div class="hud-pill">
+              <span class="hud-label">Killer:</span>
+              <span id="hud-killer-state" class="hud-val state-patrol">PATROL</span>
+            </div>
+            <div class="hud-separator"></div>
+            <div class="hud-pill">
+              <span class="hud-label">Distância:</span>
+              <span id="hud-killer-dist" class="hud-val">--</span>
+            </div>
+            <div class="hud-separator"></div>
+            <div class="hud-pill">
+              <span class="hud-label">Física:</span>
+              <span class="hud-val physics-tag">Arcade 60Hz</span>
+            </div>
+          </div>
+
+          <!-- Banner Inferior de Instruções (Canto Inferior Esquerdo) -->
+          <div id="hud-instructions">
+            <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> Mover &bull; <kbd>Shift</kbd> Correr &bull; <kbd>Mouse</kbd> Olhar / Mirar</div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Lado Direito: Sidebar de Debug Fixa -->
+      <aside id="debug-sidebar">
+        <header class="sidebar-header">
+          <div class="sidebar-badge-row">
+            <span class="sidebar-badge">SANDBOX DEBUG</span>
+            <span class="sidebar-status-tag"><span class="sidebar-status-dot"></span> ATIVO</span>
+          </div>
+          <h1 class="sidebar-title">Painel de Controle</h1>
+          <p class="sidebar-desc">
+            Ajustes de física, IA e telemetria. Passe o cursor sobre os ícones <strong>[?]</strong> para ver a explicação de cada item.
+          </p>
+        </header>
+        <div id="debug-gui-container"></div>
+      </aside>
     </div>
+
+    <!-- Elemento Único de Tooltip Flutuante -->
+    <div id="debug-tooltip" class="debug-tooltip" aria-hidden="true"></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
