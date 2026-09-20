@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import GUI from 'lil-gui';
+import EasyStar from 'easystarjs';
 import survivorMeta from '../assets/survivor.json';
 
 export const WORLD_WIDTH = 2560;
@@ -20,6 +21,7 @@ export interface DebugSettings {
   killerSpeed: number;
   detectionRadius: number;
   showKillerVision: boolean;
+  showAStarPath: boolean;
   killerAiEnabled: boolean;
 }
 
@@ -39,6 +41,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   killerSpeed: 170,
   detectionRadius: 280,
   showKillerVision: true,
+  showAStarPath: true,
   killerAiEnabled: true
 };
 
@@ -48,13 +51,24 @@ export class SandboxScene extends Phaser.Scene {
   private walls!: Phaser.Physics.Arcade.StaticGroup;
   private obstacles!: Phaser.Physics.Arcade.StaticGroup;
 
-  // Killer AI (FSM)
+  // Killer AI (FSM) & Pathfinding
   private killerState: 'PATROL' | 'CHASE' = 'PATROL';
   private patrolTarget: Phaser.Math.Vector2 = new Phaser.Math.Vector2(1280, 480);
   private patrolWaitTimer = 0;
   private killerVisionGraphic!: Phaser.GameObjects.Graphics;
+  private aStarGraphic!: Phaser.GameObjects.Graphics;
   private lastAttackTime = 0;
   private attackAlertUI!: Phaser.GameObjects.Container;
+
+  // EasyStar.js A* Pathfinding
+  private easystar!: EasyStar.js;
+  private navGrid: number[][] = [];
+  private currentChasePath: Array<{ x: number; y: number }> = [];
+  private currentPathIndex = 0;
+  private pathRecalcTimer = 0;
+  private hasDirectLOS = false;
+  private patrolPath: Array<{ x: number; y: number }> = [];
+  private patrolPathIndex = 0;
 
   // Pontos de patrulha navegáveis e desobstruídos pelo complexo (corredores de 192px/256px e salas amplas)
   private patrolWaypoints: Array<{ x: number; y: number }> = [
@@ -171,6 +185,10 @@ export class SandboxScene extends Phaser.Scene {
     this.setupInput();
     this.setupCollisions();
     this.setupDebugPanel();
+
+    // Gráficos de Debug para Rota A*
+    this.aStarGraphic = this.add.graphics();
+    this.aStarGraphic.setDepth(6);
 
     // Sincronizar visualização de física com a configuração carregada do localStorage
     this.physics.world.drawDebug = this.debugSettings.showPhysicsDebug;
@@ -417,7 +435,24 @@ export class SandboxScene extends Phaser.Scene {
       }
     }
 
-    // 5. Ambientação Visual, Sinalização Tática e Elementos de Orientação
+    // 5. Configurar grelha lógica para EasyStar.js (0 = livre, 1 = parede intransitável)
+    this.navGrid = [];
+    for (let r = 0; r < ROWS; r++) {
+      this.navGrid[r] = new Array(COLS);
+      for (let c = 0; c < COLS; c++) {
+        this.navGrid[r][c] = grid[r][c] === '#' ? 1 : 0;
+      }
+    }
+
+    this.easystar = new EasyStar.js();
+    this.easystar.setGrid(this.navGrid);
+    this.easystar.setAcceptableTiles([0]);
+    this.easystar.enableDiagonals();
+    (this.easystar as any).disableCornerCutting?.();
+    (this.easystar as any).enableSync?.();
+    this.easystar.setIterationsPerCalculation(10000);
+
+    // 6. Ambientação Visual, Sinalização Tática e Elementos de Orientação
     this.createFacilitySignage();
   }
 
@@ -858,6 +893,9 @@ export class SandboxScene extends Phaser.Scene {
       .add(this.debugSettings, 'showKillerVision')
       .name('Debug Visão');
     killerFolder
+      .add(this.debugSettings, 'showAStarPath')
+      .name('Mostrar Rota A*');
+    killerFolder
       .add(this.debugSettings, 'killerAiEnabled')
       .name('Ativar IA');
     killerFolder.open();
@@ -967,6 +1005,9 @@ export class SandboxScene extends Phaser.Scene {
         if (typeof parsed.showKillerVision === 'boolean') {
           this.debugSettings.showKillerVision = parsed.showKillerVision;
         }
+        if (typeof parsed.showAStarPath === 'boolean') {
+          this.debugSettings.showAStarPath = parsed.showAStarPath;
+        }
         if (typeof parsed.killerAiEnabled === 'boolean') {
           this.debugSettings.killerAiEnabled = parsed.killerAiEnabled;
         }
@@ -1004,6 +1045,9 @@ export class SandboxScene extends Phaser.Scene {
     this.physics.world.drawDebug = this.debugSettings.showPhysicsDebug;
     if (!this.debugSettings.showPhysicsDebug && this.physics.world.debugGraphic) {
       this.physics.world.debugGraphic.clear();
+    }
+    if (!this.debugSettings.showAStarPath && this.aStarGraphic) {
+      this.aStarGraphic.clear();
     }
 
     if (this.cameras?.main) {
@@ -1193,9 +1237,143 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   /**
-   * Inteligência Artificial do Killer (FSM):
-   * - PATROL: caminha lentamente até waypoints predefinidos / aleatórios com animação 'walk'.
-   * - CHASE: se distância até o Player < Detection Radius, corre perseguindo com animação 'run'.
+   * Verifica se há linha de visão direta desobstruída (Line of Sight - LOS)
+   * entre dois pontos do mapa, testando tanto o raio central quanto bordas
+   * laterais para evitar contorno de quinas raspando na parede.
+   */
+  private hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 2) return true;
+
+    const TILE_SIZE = 64;
+    const steps = Math.ceil(dist / 20);
+
+    // Margem lateral perpendicular para considerar a largura física do personagem
+    const perpX = (-dy / dist) * 20;
+    const perpY = (dx / dist) * 20;
+
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const px = x1 + dx * t;
+      const py = y1 + dy * t;
+
+      // Raio central
+      const c = Math.floor(px / TILE_SIZE);
+      const r = Math.floor(py / TILE_SIZE);
+      if (r < 0 || r >= 30 || c < 0 || c >= 40 || this.navGrid[r][c] === 1) {
+        return false;
+      }
+
+      // Raio lateral esquerdo
+      const cLeft = Math.floor((px + perpX) / TILE_SIZE);
+      const rLeft = Math.floor((py + perpY) / TILE_SIZE);
+      if (rLeft < 0 || rLeft >= 30 || cLeft < 0 || cLeft >= 40 || this.navGrid[rLeft][cLeft] === 1) {
+        return false;
+      }
+
+      // Raio lateral direito
+      const cRight = Math.floor((px - perpX) / TILE_SIZE);
+      const rRight = Math.floor((py - perpY) / TILE_SIZE);
+      if (rRight < 0 || rRight >= 30 || cRight < 0 || cRight >= 40 || this.navGrid[rRight][cRight] === 1) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private getNearestWalkableTile(col: number, row: number): { x: number; y: number } | null {
+    const COLS = 40;
+    const ROWS = 30;
+
+    if (row >= 0 && row < ROWS && col >= 0 && col < COLS && this.navGrid[row][col] === 0) {
+      return { x: col, y: row };
+    }
+
+    // Busca em anéis concêntricos (raio de 1 a 3 blocos) pela célula transitável mais próxima
+    for (let radius = 1; radius <= 3; radius++) {
+      for (let dr = -radius; dr <= radius; dr++) {
+        for (let dc = -radius; dc <= radius; dc++) {
+          const nr = row + dr;
+          const nc = col + dc;
+          if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && this.navGrid[nr][nc] === 0) {
+            return { x: nc, y: nr };
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private calculateAStarPath(fromX: number, fromY: number, toX: number, toY: number): void {
+    if (!this.easystar || this.navGrid.length === 0) return;
+
+    const COLS = 40;
+    const ROWS = 30;
+    const TILE_SIZE = 64;
+
+    const startCol = Phaser.Math.Clamp(Math.floor(fromX / TILE_SIZE), 0, COLS - 1);
+    const startRow = Phaser.Math.Clamp(Math.floor(fromY / TILE_SIZE), 0, ROWS - 1);
+    const endCol = Phaser.Math.Clamp(Math.floor(toX / TILE_SIZE), 0, COLS - 1);
+    const endRow = Phaser.Math.Clamp(Math.floor(toY / TILE_SIZE), 0, ROWS - 1);
+
+    const safeStart = this.getNearestWalkableTile(startCol, startRow);
+    const safeEnd = this.getNearestWalkableTile(endCol, endRow);
+
+    if (!safeStart || !safeEnd) return;
+
+    this.easystar.findPath(safeStart.x, safeStart.y, safeEnd.x, safeEnd.y, (path) => {
+      if (path && path.length > 0) {
+        this.currentChasePath = path.map((p) => ({
+          x: p.x * TILE_SIZE + TILE_SIZE / 2,
+          y: p.y * TILE_SIZE + TILE_SIZE / 2
+        }));
+        this.currentPathIndex = this.currentChasePath.length > 1 ? 1 : 0;
+      }
+    });
+    this.easystar.calculate();
+  }
+
+  private calculatePatrolPath(fromX: number, fromY: number, toX: number, toY: number): void {
+    if (!this.easystar || this.navGrid.length === 0) return;
+
+    const COLS = 40;
+    const ROWS = 30;
+    const TILE_SIZE = 64;
+
+    const startCol = Phaser.Math.Clamp(Math.floor(fromX / TILE_SIZE), 0, COLS - 1);
+    const startRow = Phaser.Math.Clamp(Math.floor(fromY / TILE_SIZE), 0, ROWS - 1);
+    const endCol = Phaser.Math.Clamp(Math.floor(toX / TILE_SIZE), 0, COLS - 1);
+    const endRow = Phaser.Math.Clamp(Math.floor(toY / TILE_SIZE), 0, ROWS - 1);
+
+    const safeStart = this.getNearestWalkableTile(startCol, startRow);
+    const safeEnd = this.getNearestWalkableTile(endCol, endRow);
+
+    if (!safeStart || !safeEnd) return;
+
+    this.easystar.findPath(safeStart.x, safeStart.y, safeEnd.x, safeEnd.y, (path) => {
+      if (path && path.length > 0) {
+        this.patrolPath = path.map((p) => ({
+          x: p.x * TILE_SIZE + TILE_SIZE / 2,
+          y: p.y * TILE_SIZE + TILE_SIZE / 2
+        }));
+        this.patrolPathIndex = this.patrolPath.length > 1 ? 1 : 0;
+      }
+    });
+    this.easystar.calculate();
+  }
+
+  /**
+   * Inteligência Artificial do Killer (FSM + A* Pathfinding):
+   * - PATROL: navega lentamente pelos waypoints do complexo com animação 'walk'.
+   * - CHASE:
+   *   1. Traça raio (Line of Sight) até o Player. Se livre, corre em linha reta.
+   *   2. Se houver paredes/obstáculos bloqueando a linha reta, utiliza A* (EasyStar.js)
+   *      para calcular a rota mais curta e contornar os blocos inteligentemente.
+   *   3. Recalcula a rota periodicamente (a cada 250ms) conforme o Player se desloca.
    * - LOSE: se distância > 1.5x Detection Radius, desiste e retorna para PATROL.
    */
   private handleKillerAI(delta: number): void {
@@ -1209,6 +1387,7 @@ export class SandboxScene extends Phaser.Scene {
         this.killer.setFrame(0);
       }
       this.updateKillerVisionGraphic();
+      if (this.aStarGraphic) this.aStarGraphic.clear();
       return;
     }
 
@@ -1228,11 +1407,14 @@ export class SandboxScene extends Phaser.Scene {
     if (this.killerState === 'PATROL') {
       if (distToPlayer <= detectionRadius) {
         this.killerState = 'CHASE';
+        this.pathRecalcTimer = 250; // Força cálculo imediato do caminho A* no primeiro frame se necessário
+        this.currentChasePath = [];
       }
     } else if (this.killerState === 'CHASE') {
       if (distToPlayer > loseRadius) {
         this.killerState = 'PATROL';
         this.patrolWaitTimer = 0;
+        this.currentChasePath = [];
         this.pickNewPatrolTarget();
       }
     }
@@ -1240,28 +1422,95 @@ export class SandboxScene extends Phaser.Scene {
     this.monitorState.killerState = this.killerState;
 
     if (this.killerState === 'CHASE') {
-      // Estado CHASE: perseguir o Player em alta velocidade com animação 'run'
-      const dx = this.player.x - this.killer.x;
-      const dy = this.player.y - this.killer.y;
-      const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+      // 1. Verificar linha direta de visão (Line of Sight)
+      this.hasDirectLOS = this.hasLineOfSight(
+        this.killer.x,
+        this.killer.y,
+        this.player.x,
+        this.player.y
+      );
+
       const speed = this.debugSettings.killerSpeed;
 
-      this.killer.setVelocity(moveVec.x * speed, moveVec.y * speed);
+      if (this.hasDirectLOS) {
+        // Linha reta desobstruída: perseguição direta em alta velocidade
+        this.currentChasePath = [];
+        const dx = this.player.x - this.killer.x;
+        const dy = this.player.y - this.killer.y;
+        const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
 
-      if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'run') {
-        this.killer.anims.play('run', true);
+        this.killer.setVelocity(moveVec.x * speed, moveVec.y * speed);
+
+        if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'run') {
+          this.killer.anims.play('run', true);
+        }
+
+        const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+        this.rotateKillerTowards(targetAngle, delta, 14);
+      } else {
+        // Linha de visão bloqueada por paredes: Perseguição inteligente via A*
+        this.pathRecalcTimer += delta;
+
+        // Recalcular rota a cada 250ms ou se ainda não tiver rota
+        if (this.pathRecalcTimer >= 250 || this.currentChasePath.length === 0) {
+          this.pathRecalcTimer = 0;
+          this.calculateAStarPath(this.killer.x, this.killer.y, this.player.x, this.player.y);
+        }
+
+        // Seguir os nós da rota calculada
+        if (this.currentChasePath.length > 0) {
+          // Avançar nó se já estiver próximo (< 36px)
+          const targetNode = this.currentChasePath[this.currentPathIndex];
+          const distToNode = Phaser.Math.Distance.Between(
+            this.killer.x,
+            this.killer.y,
+            targetNode.x,
+            targetNode.y
+          );
+
+          if (distToNode < 36 && this.currentPathIndex < this.currentChasePath.length - 1) {
+            this.currentPathIndex++;
+          }
+
+          // Atalho suave (string pulling): se já houver linha de visão direta para o próximo nó, avançar
+          if (this.currentPathIndex + 1 < this.currentChasePath.length) {
+            const nextNode = this.currentChasePath[this.currentPathIndex + 1];
+            if (this.hasLineOfSight(this.killer.x, this.killer.y, nextNode.x, nextNode.y)) {
+              this.currentPathIndex++;
+            }
+          }
+
+          const activeNode = this.currentChasePath[this.currentPathIndex];
+          const dx = activeNode.x - this.killer.x;
+          const dy = activeNode.y - this.killer.y;
+          const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+
+          this.killer.setVelocity(moveVec.x * speed, moveVec.y * speed);
+
+          if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'run') {
+            this.killer.anims.play('run', true);
+          }
+
+          const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
+          this.rotateKillerTowards(targetAngle, delta, 12);
+        } else {
+          // Fallback temporário enquanto o path é gerado
+          const dx = this.player.x - this.killer.x;
+          const dy = this.player.y - this.killer.y;
+          const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+          this.killer.setVelocity(moveVec.x * speed * 0.5, moveVec.y * speed * 0.5);
+        }
       }
-
-      // Rotação suave apontando na direção do Player (- Math.PI / 2 porque os frames olham para sul)
-      const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
-      this.rotateKillerTowards(targetAngle, delta, 14);
     } else {
-      // Estado PATROL: patrulha lenta e cautelosa com animação 'walk'
-      const dx = this.patrolTarget.x - this.killer.x;
-      const dy = this.patrolTarget.y - this.killer.y;
-      const distToTarget = Math.sqrt(dx * dx + dy * dy);
+      // Estado PATROL: patrulha cautelosa
+      const distToTarget = Phaser.Math.Distance.Between(
+        this.killer.x,
+        this.killer.y,
+        this.patrolTarget.x,
+        this.patrolTarget.y
+      );
 
-      if (distToTarget < 35) {
+      if (distToTarget < 38) {
         // Chegou ao waypoint temporário: aguarda brevemente
         this.killer.setVelocity(0, 0);
         if (this.killer.anims.isPlaying) {
@@ -1275,28 +1524,70 @@ export class SandboxScene extends Phaser.Scene {
           this.pickNewPatrolTarget();
         }
       } else {
-        const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-        const patrolSpeed = this.debugSettings.killerSpeed * 0.45; // Caminhada lenta de patrulha
+        const patrolSpeed = this.debugSettings.killerSpeed * 0.45;
 
-        this.killer.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
+        // Se houver linha de visão direta até o alvo de patrulha, caminhar direto
+        if (this.hasLineOfSight(this.killer.x, this.killer.y, this.patrolTarget.x, this.patrolTarget.y)) {
+          this.patrolPath = [];
+          const dx = this.patrolTarget.x - this.killer.x;
+          const dy = this.patrolTarget.y - this.killer.y;
+          const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
 
-        if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'walk') {
-          this.killer.anims.play('walk', true);
+          this.killer.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
+
+          if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'walk') {
+            this.killer.anims.play('walk', true);
+          }
+
+          const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+          this.rotateKillerTowards(targetAngle, delta, 5);
+        } else {
+          // Contornar via A* para patrulha se houver paredes intermediárias
+          if (this.patrolPath.length > 0) {
+            const targetNode = this.patrolPath[this.patrolPathIndex];
+            const distToNode = Phaser.Math.Distance.Between(
+              this.killer.x,
+              this.killer.y,
+              targetNode.x,
+              targetNode.y
+            );
+
+            if (distToNode < 36 && this.patrolPathIndex < this.patrolPath.length - 1) {
+              this.patrolPathIndex++;
+            }
+
+            const activeNode = this.patrolPath[this.patrolPathIndex];
+            const dx = activeNode.x - this.killer.x;
+            const dy = activeNode.y - this.killer.y;
+            const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+
+            this.killer.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
+
+            if (!this.killer.anims.isPlaying || this.killer.anims.currentAnim?.key !== 'walk') {
+              this.killer.anims.play('walk', true);
+            }
+
+            const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
+            this.rotateKillerTowards(targetAngle, delta, 6);
+          } else {
+            this.calculatePatrolPath(this.killer.x, this.killer.y, this.patrolTarget.x, this.patrolTarget.y);
+          }
         }
-
-        const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
-        this.rotateKillerTowards(targetAngle, delta, 5);
       }
     }
 
     this.updateKillerVisionGraphic();
+    this.updateAStarGraphic();
   }
 
   private pickNewPatrolTarget(): void {
     const randomWp = Phaser.Utils.Array.GetRandom(this.patrolWaypoints);
-    const offsetX = Phaser.Math.Between(-30, 30);
-    const offsetY = Phaser.Math.Between(-30, 30);
+    const offsetX = Phaser.Math.Between(-25, 25);
+    const offsetY = Phaser.Math.Between(-25, 25);
     this.patrolTarget.set(randomWp.x + offsetX, randomWp.y + offsetY);
+    this.patrolPath = [];
+    this.patrolPathIndex = 0;
+    this.calculatePatrolPath(this.killer.x, this.killer.y, this.patrolTarget.x, this.patrolTarget.y);
   }
 
   private rotateKillerTowards(targetAngle: number, delta: number, turnSpeed: number): void {
@@ -1343,7 +1634,7 @@ export class SandboxScene extends Phaser.Scene {
       this.killerVisionGraphic.lineStyle(2, 0xff2222, 0.7);
       this.killerVisionGraphic.strokeCircle(kx, ky, detectionRadius);
 
-      // Linha de mira / perseguição direta até o jogador
+      // Linha de mira direta até o jogador
       this.killerVisionGraphic.lineStyle(2, 0xff2222, 0.6);
       this.killerVisionGraphic.lineBetween(kx, ky, this.player.x, this.player.y);
     } else {
@@ -1356,6 +1647,84 @@ export class SandboxScene extends Phaser.Scene {
       // Linha sutil até o ponto de patrulha
       this.killerVisionGraphic.lineStyle(1, 0x88bbff, 0.25);
       this.killerVisionGraphic.lineBetween(kx, ky, this.patrolTarget.x, this.patrolTarget.y);
+    }
+  }
+
+  /**
+   * Renderização do Debug da Rota A*
+   * - Traçado verde direto quando há Line of Sight (visão livre)
+   * - Rota contornando quinas com balizas/nós ciano e destino ativo dourado quando bloqueado
+   */
+  private updateAStarGraphic(): void {
+    if (!this.aStarGraphic) return;
+    this.aStarGraphic.clear();
+
+    if (!this.debugSettings.showAStarPath || !this.killer || !this.debugSettings.killerAiEnabled) return;
+
+    if (this.killerState === 'CHASE') {
+      if (this.hasDirectLOS) {
+        // Linha de Visão Direta (LOS) - verde neon
+        this.aStarGraphic.lineStyle(2.5, 0x00ff88, 0.7);
+        this.aStarGraphic.lineBetween(this.killer.x, this.killer.y, this.player.x, this.player.y);
+
+        this.aStarGraphic.fillStyle(0x00ff88, 0.4);
+        this.aStarGraphic.fillCircle(this.player.x, this.player.y, 8);
+      } else if (this.currentChasePath && this.currentChasePath.length > 0) {
+        // Linha da rota contornando paredes (A*) - ciano vibrante
+        this.aStarGraphic.lineStyle(3, 0x00d4ff, 0.85);
+
+        // Do Killer ao primeiro nó ativo
+        const currentNode = this.currentChasePath[this.currentPathIndex];
+        if (currentNode) {
+          this.aStarGraphic.lineBetween(this.killer.x, this.killer.y, currentNode.x, currentNode.y);
+        }
+
+        // Conectar todos os nós da rota calculada
+        for (let i = this.currentPathIndex; i < this.currentChasePath.length - 1; i++) {
+          const n1 = this.currentChasePath[i];
+          const n2 = this.currentChasePath[i + 1];
+          this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
+        }
+
+        // Do último nó até o Player
+        const lastNode = this.currentChasePath[this.currentChasePath.length - 1];
+        if (lastNode) {
+          this.aStarGraphic.lineStyle(2, 0xffaa00, 0.8);
+          this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, this.player.x, this.player.y);
+        }
+
+        // Desenhar os nós da rota como balizas
+        for (let i = 0; i < this.currentChasePath.length; i++) {
+          const node = this.currentChasePath[i];
+          const isTargetNode = i === this.currentPathIndex;
+
+          if (isTargetNode) {
+            // Nó ativo / destino imediato (dourado/âmbar)
+            this.aStarGraphic.fillStyle(0xffbb00, 0.9);
+            this.aStarGraphic.fillCircle(node.x, node.y, 7);
+            this.aStarGraphic.lineStyle(2, 0xffffff, 1);
+            this.aStarGraphic.strokeCircle(node.x, node.y, 10);
+          } else if (i > this.currentPathIndex) {
+            // Nós futuros (ciano)
+            this.aStarGraphic.fillStyle(0x00d4ff, 0.7);
+            this.aStarGraphic.fillCircle(node.x, node.y, 5);
+            this.aStarGraphic.lineStyle(1.5, 0x0088cc, 0.5);
+            this.aStarGraphic.strokeCircle(node.x, node.y, 7);
+          }
+        }
+      }
+    } else if (this.patrolPath && this.patrolPath.length > 0) {
+      // Rota de patrulha A* sutil
+      this.aStarGraphic.lineStyle(1.5, 0x88bbff, 0.4);
+      const currentNode = this.patrolPath[this.patrolPathIndex];
+      if (currentNode) {
+        this.aStarGraphic.lineBetween(this.killer.x, this.killer.y, currentNode.x, currentNode.y);
+      }
+      for (let i = this.patrolPathIndex; i < this.patrolPath.length - 1; i++) {
+        const n1 = this.patrolPath[i];
+        const n2 = this.patrolPath[i + 1];
+        this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
+      }
     }
   }
 }

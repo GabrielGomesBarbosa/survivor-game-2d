@@ -13,6 +13,8 @@
   "license": "ISC",
   "description": "2D Top-Down Survival Horror game built with Phaser 3, Vite, and TypeScript",
   "dependencies": {
+    "@types/easystarjs": "^0.1.29",
+    "easystarjs": "^0.4.4",
     "lil-gui": "^0.21.0",
     "phaser": "^3.90.0"
   },
