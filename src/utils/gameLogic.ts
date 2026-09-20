@@ -46,6 +46,93 @@ export function wrapAngle(angle: number): number {
   return wrapped;
 }
 
+export type PlayerAnimState = 'idle' | 'walk' | 'run';
+
+export interface PlayerMovementEvaluation {
+  animState: PlayerAnimState;
+  isMoving: boolean;
+  actualSpeed: number;
+}
+
+/**
+ * Calcula a velocidade escalar real de deslocamento no mundo a partir do delta de posição e delta time.
+ * @param deltaX Deslocamento horizontal no frame.
+ * @param deltaY Deslocamento vertical no frame.
+ * @param deltaMs Tempo delta do frame em milissegundos.
+ * @returns Velocidade escalar em pixels por segundo.
+ */
+export function calculateEffectiveSpeed(
+  deltaX: number,
+  deltaY: number,
+  deltaMs: number
+): number {
+  if (deltaMs <= 0) return 0;
+  const dist = Math.hypot(deltaX, deltaY);
+  return (dist / deltaMs) * 1000;
+}
+
+/**
+ * Avalia o estado real de locomoção e animação do jogador com base no deslocamento espacial efetivo:
+ * - Se não há intenção de movimento ou o deslocamento real for nulo/estagnado (< threshold),
+ *   retorna 'idle', isMoving = false e actualSpeed = 0.
+ * - Caso esteja colidindo contra paredes em todos os eixos solicitados, bloqueia para 'idle'.
+ * - Se estiver deslizando (strafe livre em um dos eixos) ou caminhando livremente,
+ *   retorna 'walk' (ou 'run' se sprint ativo), isMoving = true e actualSpeed = effectiveSpeed.
+ *
+ * @param isInputMoving Teclas de movimento ativas.
+ * @param isSprinting Tecla de corrida ativa.
+ * @param effectiveSpeed Velocidade real de deslocamento em px/s.
+ * @param threshold Limiar mínimo de velocidade para ativação de passos (padrão: 5 px/s).
+ * @param blocked Flags de bloqueio físico da colisão Arcade (left, right, up, down).
+ * @param inputDir Vetor direcional desejado pelo input { x, y }.
+ */
+export function evaluatePlayerMovementState(
+  isInputMoving: boolean,
+  isSprinting: boolean,
+  effectiveSpeed: number,
+  threshold: number = 5,
+  blocked?: { left?: boolean; right?: boolean; up?: boolean; down?: boolean },
+  inputDir?: { x: number; y: number }
+): PlayerMovementEvaluation {
+  if (!isInputMoving) {
+    return {
+      animState: 'idle',
+      isMoving: false,
+      actualSpeed: 0
+    };
+  }
+
+  // Se o movimento for frontal total contra uma parede/obstáculo bloqueado
+  if (blocked && inputDir) {
+    const blockedX = (inputDir.x > 0 && Boolean(blocked.right)) || (inputDir.x < 0 && Boolean(blocked.left));
+    const blockedY = (inputDir.y > 0 && Boolean(blocked.down)) || (inputDir.y < 0 && Boolean(blocked.up));
+    const hasFreeX = inputDir.x !== 0 && !blockedX;
+    const hasFreeY = inputDir.y !== 0 && !blockedY;
+
+    if (!hasFreeX && !hasFreeY) {
+      return {
+        animState: 'idle',
+        isMoving: false,
+        actualSpeed: 0
+      };
+    }
+  }
+
+  if (effectiveSpeed < threshold) {
+    return {
+      animState: 'idle',
+      isMoving: false,
+      actualSpeed: 0
+    };
+  }
+
+  return {
+    animState: isSprinting ? 'run' : 'walk',
+    isMoving: true,
+    actualSpeed: effectiveSpeed
+  };
+}
+
 /**
  * Pure calculation of generator progress addition.
  * @param current Current progress percentage (0 - 100).

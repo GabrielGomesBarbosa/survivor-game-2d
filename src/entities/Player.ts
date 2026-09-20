@@ -6,6 +6,7 @@
 
 import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
+import { calculateEffectiveSpeed, evaluatePlayerMovementState } from '../utils/gameLogic';
 
 export class Player {
   public sprite: Phaser.Physics.Arcade.Sprite;
@@ -15,10 +16,15 @@ export class Player {
   public isMoving = false;
   public isSprinting = false;
   public currentSpeed = 0;
+  public isInputMoving = false;
+  public isSprintingInput = false;
+  public inputDir = { x: 0, y: 0 };
 
   // Trava de integridade contra penetração em paredes
   public lastSafeX = 1280;
   public lastSafeY = 960;
+  public lastPositionX = 1280;
+  public lastPositionY = 960;
 
   // Ângulo alvo persistente para rotação suave
   private lastTargetAngle = 0;
@@ -43,6 +49,8 @@ export class Player {
     this.scene = scene;
     this.lastSafeX = x;
     this.lastSafeY = y;
+    this.lastPositionX = x;
+    this.lastPositionY = y;
 
     // Criar sprite físico do Survivor
     this.sprite = scene.physics.add.sprite(x, y, 'survivor', 0);
@@ -135,10 +143,13 @@ export class Player {
   private handleMovement(isRepairing: boolean, settings: DebugSettings): void {
     if (isRepairing) {
       this.sprite.setVelocity(0, 0);
+      this.isInputMoving = false;
+      this.isSprintingInput = false;
       this.isMoving = false;
       this.isSprinting = false;
       this.currentSpeed = 0;
-      if (this.sprite.anims.isPlaying && this.sprite.anims.currentAnim?.key !== 'walk') {
+      this.inputDir = { x: 0, y: 0 };
+      if (this.sprite.anims.isPlaying) {
         this.sprite.anims.stop();
         this.sprite.setFrame(0);
       }
@@ -183,33 +194,19 @@ export class Player {
     if (isLeft) moveX -= 1;
     if (isRight) moveX += 1;
 
-    const isMoving = moveX !== 0 || moveY !== 0;
-    const isSprinting = Boolean(isMoving && isSprintingKey);
+    const isInputMoving = moveX !== 0 || moveY !== 0;
+    const isSprinting = Boolean(isInputMoving && isSprintingKey);
 
-    this.isMoving = isMoving;
-    this.isSprinting = isSprinting;
+    this.isInputMoving = isInputMoving;
+    this.isSprintingInput = isSprinting;
+    this.inputDir = { x: moveX, y: moveY };
 
-    if (isMoving) {
+    if (isInputMoving) {
       const moveVector = new Phaser.Math.Vector2(moveX, moveY).normalize();
-      const currentSpeed = isSprinting ? settings.runSpeed : settings.walkSpeed;
-
-      this.sprite.setVelocity(moveVector.x * currentSpeed, moveVector.y * currentSpeed);
-      this.currentSpeed = currentSpeed;
-
-      const targetAnim = isSprinting ? 'run' : 'walk';
-      if (this.scene.anims.exists(targetAnim)) {
-        if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== targetAnim) {
-          this.sprite.anims.play(targetAnim, true);
-        }
-      }
+      const intendedSpeed = isSprinting ? settings.runSpeed : settings.walkSpeed;
+      this.sprite.setVelocity(moveVector.x * intendedSpeed, moveVector.y * intendedSpeed);
     } else {
       this.sprite.setVelocity(0, 0);
-      this.currentSpeed = 0;
-
-      if (this.sprite.anims.isPlaying) {
-        this.sprite.anims.stop();
-        this.sprite.setFrame(0);
-      }
     }
   }
 
@@ -297,6 +294,61 @@ export class Player {
       this.sprite.setPosition(this.lastSafeX, this.lastSafeY);
       this.sprite.setVelocity(0, 0);
       (this.sprite.body as Phaser.Physics.Arcade.Body).updateCenter();
+    }
+  }
+
+  /**
+   * Pós-processamento físico do Player (executado no POST_UPDATE):
+   * 1. Aplica trava de segurança anti-tunelamento nas paredes (enforceWallBounds).
+   * 2. Calcula o deslocamento físico real no mundo e a velocidade efetiva.
+   * 3. Avalia o estado de bloqueio e animação: para e entra em 'idle' sob colisão frontal
+   *    ou continua a animação caso esteja deslizando/strafing pela parede.
+   */
+  public postUpdate(delta: number, navGrid: number[][]): void {
+    this.enforceWallBounds(navGrid);
+
+    const body = this.sprite.body as Phaser.Physics.Arcade.Body;
+    const deltaMs = delta > 0 ? delta : 16.66;
+    const dx = this.sprite.x - this.lastPositionX;
+    const dy = this.sprite.y - this.lastPositionY;
+    const effectiveSpeed = calculateEffectiveSpeed(dx, dy, deltaMs);
+
+    this.lastPositionX = this.sprite.x;
+    this.lastPositionY = this.sprite.y;
+
+    const blocked = body
+      ? {
+          left: body.blocked.left,
+          right: body.blocked.right,
+          up: body.blocked.up,
+          down: body.blocked.down
+        }
+      : undefined;
+
+    const evalState = evaluatePlayerMovementState(
+      this.isInputMoving,
+      this.isSprintingInput,
+      effectiveSpeed,
+      5,
+      blocked,
+      this.inputDir
+    );
+
+    this.isMoving = evalState.isMoving;
+    this.isSprinting = evalState.isMoving && this.isSprintingInput;
+    this.currentSpeed = Math.round(evalState.actualSpeed);
+
+    if (evalState.animState === 'idle') {
+      if (this.sprite.anims.isPlaying) {
+        this.sprite.anims.stop();
+        this.sprite.setFrame(0);
+      }
+    } else {
+      if (this.scene.anims.exists(evalState.animState)) {
+        if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== evalState.animState) {
+          this.sprite.anims.play(evalState.animState, true);
+        }
+      }
     }
   }
 

@@ -112,7 +112,9 @@ export class SandboxScene extends Phaser.Scene {
     this.physics.add.overlap(this.killer.sprite, this.player.sprite, () => {
       this.killer.handlePlayerCollision(this.player, this.debugPanel.settings, () => this.telemetryHud.showAttackAlert());
     });
-    this.events.on(Phaser.Scenes.Events.POST_UPDATE, () => this.player.enforceWallBounds(this.mapData.navGrid));
+    this.events.on(Phaser.Scenes.Events.POST_UPDATE, (_: number, d: number) => {
+      this.player.postUpdate(d, this.mapData.navGrid); this.updateTelemetry();
+    });
 
     // 6. Camera & World Bounds
     this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
@@ -136,7 +138,6 @@ export class SandboxScene extends Phaser.Scene {
       delta, this.isRepairing, this.debugPanel.settings.skillCheckFrequency,
       this.repairStaggerTimer <= 0, (res) => this.onSkillCheckResult(res)
     );
-    this.updateTelemetry();
   }
 
   /**
