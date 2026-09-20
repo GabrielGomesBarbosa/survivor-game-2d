@@ -2,8 +2,8 @@ import Phaser from 'phaser';
 import GUI from 'lil-gui';
 import survivorMeta from '../assets/survivor.json';
 
-export const WORLD_WIDTH = 3000;
-export const WORLD_HEIGHT = 2000;
+export const WORLD_WIDTH = 2560;
+export const WORLD_HEIGHT = 1920;
 
 export interface DebugSettings {
   walkSpeed: number;
@@ -50,28 +50,31 @@ export class SandboxScene extends Phaser.Scene {
 
   // Killer AI (FSM)
   private killerState: 'PATROL' | 'CHASE' = 'PATROL';
-  private patrolTarget: Phaser.Math.Vector2 = new Phaser.Math.Vector2(1500, 480);
+  private patrolTarget: Phaser.Math.Vector2 = new Phaser.Math.Vector2(1280, 480);
   private patrolWaitTimer = 0;
   private killerVisionGraphic!: Phaser.GameObjects.Graphics;
   private lastAttackTime = 0;
   private attackAlertUI!: Phaser.GameObjects.Container;
 
-  // Pontos de patrulha navegáveis pelo complexo
+  // Pontos de patrulha navegáveis e desobstruídos pelo complexo (corredores de 192px/256px e salas amplas)
   private patrolWaypoints: Array<{ x: number; y: number }> = [
-    { x: 1500, y: 480 },  // Galpão Norte Centro
-    { x: 1250, y: 350 },  // Galpão Norte Oeste
-    { x: 1750, y: 350 },  // Galpão Norte Leste
-    { x: 1500, y: 780 },  // Corredor Norte
-    { x: 1100, y: 1000 }, // Corredor Oeste
-    { x: 1500, y: 1000 }, // Pátio Central
-    { x: 1900, y: 1000 }, // Corredor Leste
-    { x: 2500, y: 800 },  // Usina Termoelétrica
-    { x: 2500, y: 1300 }, // Sala dos Pilares
-    { x: 780, y: 850 },   // Saída Laboratório
-    { x: 500, y: 1200 },  // Posto Segurança
-    { x: 1500, y: 1400 }, // Acesso Bunker
-    { x: 1300, y: 1700 }, // Trincheira Sul
-    { x: 1700, y: 1700 }  // Checkpoint Sul
+    { x: 1280, y: 480 },  // Corredor Norte Centro
+    { x: 720, y: 480 },   // Corredor Norte / Oeste (cruzamento)
+    { x: 1840, y: 480 },  // Corredor Norte / Leste (cruzamento)
+    { x: 720, y: 720 },   // Anel Oeste Superior
+    { x: 720, y: 960 },   // Corredor Oeste Centro
+    { x: 720, y: 1200 },  // Anel Oeste Inferior
+    { x: 1840, y: 720 },  // Anel Leste Superior
+    { x: 1840, y: 960 },  // Corredor Leste Centro
+    { x: 1840, y: 1200 }, // Anel Leste Inferior
+    { x: 1280, y: 1440 }, // Corredor Sul Centro
+    { x: 720, y: 1440 },  // Corredor Sul / Oeste (cruzamento)
+    { x: 1840, y: 1440 }, // Corredor Sul / Leste (cruzamento)
+    { x: 320, y: 960 },   // Enfermaria (Ala Oeste)
+    { x: 2240, y: 960 },  // Gerador A (Ala Leste)
+    { x: 1280, y: 960 },  // Recepção Central
+    { x: 1280, y: 224 },  // Ala de Contenção (Norte)
+    { x: 1280, y: 1680 }  // Setor de Manutenção (Sul)
   ];
 
   // Inputs
@@ -93,9 +96,9 @@ export class SandboxScene extends Phaser.Scene {
     rotationDeg: '0°',
     playerScale: '0.25x',
     hitboxPixels: '133px',
-    playerX: '1500',
-    playerY: '1000',
-    worldSize: '3000 x 2000',
+    playerX: '1280',
+    playerY: '960',
+    worldSize: '2560 x 1920',
     killerState: 'PATROL',
     killerDist: '0px',
     fps: 0
@@ -205,28 +208,34 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   /**
-   * Cenário Expandido (3000 x 2000):
-   * - Chão com grid visual em grande escala.
-   * - Paredes perimetrais estáticas delimitando todo o mapa.
-   * - 5 Zonas distintas com dezenas de obstáculos (galpão, laboratório, usina de força, bunker e postos táticos).
+   * Cenário Estruturado - Instalação de Pesquisa / Asilo Abandonado:
+   * - Malha lógica baseada em blocos de 64x64 pixels (40 colunas x 30 linhas = 2560x1920).
+   * - Vão mínimo de passagem: NENHUM corredor ou porta com menos de 192px (3 blocos) a 256px (4 blocos),
+   *   garantindo passagem 100% livre e fluida para Survivor (diâmetro ~133px) e Killer (diâmetro ~170px).
+   * - Fusão retangular 2D gananciosa (Greedy 2D Rectangle Merging) que elimina quinas internas,
+   *   arestas sobrepostas e costuras na física Arcade.
+   * - Sala Central (Recepção: 768x640px) com 4 portas amplas (256px e 192px).
+   * - Anel de Corredores de Looping contínuo ao redor do bloco central.
+   * - Duas Salas Anexas ("Enfermaria" e "Gerador A") com múltiplos acessos cada (sem becos sem saída).
+   * - Ala de Contenção (Spawn do Killer) ao norte com rota direta para o anel.
    */
   private createEnvironment(): void {
-    // 1. Chão com grid quadriculado escuro cobrindo todo o mundo 3000x2000
-    const grid = this.add.grid(
+    // 1. Chão com grid quadriculado escuro cobrindo todo o mundo 2560x1920
+    const gridBg = this.add.grid(
       WORLD_WIDTH / 2,
       WORLD_HEIGHT / 2,
       WORLD_WIDTH,
       WORLD_HEIGHT,
       64,
       64,
-      0x13141a,
+      0x12141a,
       1,
-      0x212430,
+      0x1f232d,
       0.8
     );
-    grid.setDepth(0);
+    gridBg.setDepth(0);
 
-    // Grid accent lines a cada 256px
+    // Linhas mestras estruturais a cada 256px (4 blocos)
     const majorGrid = this.add.grid(
       WORLD_WIDTH / 2,
       WORLD_HEIGHT / 2,
@@ -236,276 +245,332 @@ export class SandboxScene extends Phaser.Scene {
       256,
       0x000000,
       0,
-      0x34394c,
-      0.6
+      0x2c3342,
+      0.5
     );
     majorGrid.setDepth(0);
 
-    // 2. Paredes perimetrais estáticas
+    // 2. Inicializar grupos de física estática
     this.walls = this.physics.add.staticGroup();
-    const wallThickness = 28;
-
-    // Paredes externas
-    this.buildWall(WORLD_WIDTH / 2, wallThickness / 2, WORLD_WIDTH, wallThickness);
-    this.buildWall(WORLD_WIDTH / 2, WORLD_HEIGHT - wallThickness / 2, WORLD_WIDTH, wallThickness);
-    this.buildWall(wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT);
-    this.buildWall(WORLD_WIDTH - wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT);
-
-    // 3. Obstáculos estruturados distribuídos pelo mapa
     this.obstacles = this.physics.add.staticGroup();
 
-    // ----------------------------------------------------
-    // ZONA CENTRAL (Spawn & Hub Inicial: ~1500, 1000)
-    // ----------------------------------------------------
-    this.buildBarricade(1300, 1000, 36, 180, 'Barricada Oeste');
-    this.buildBarricade(1700, 1000, 36, 180, 'Barricada Leste');
-    this.buildCrate(1380, 880, 75, 75, 'Munição');
-    this.buildCrate(1620, 880, 80, 65, 'Suprimentos');
-    this.buildCrate(1380, 1120, 80, 65, 'Equipamento');
-    this.buildCrate(1620, 1120, 75, 75, 'Médico');
+    // 3. Montar malha lógica da planta baixa (40 colunas x 30 linhas)
+    const COLS = 40;
+    const ROWS = 30;
+    const TILE_SIZE = 64;
 
-    // ----------------------------------------------------
-    // ZONA NORTE: Galpão Logístico & Pátio de Carga (Y: 100..700)
-    // ----------------------------------------------------
-    // Paredes estruturais externas com vão aberto central
-    this.buildStructure(1150, 660, 440, 28, 'Muralha Galpão W');
-    this.buildStructure(1850, 660, 440, 28, 'Muralha Galpão E');
-    this.buildStructure(1500, 360, 28, 380, 'Divisória Interna');
-
-    // Containers de transporte naval
-    this.buildContainer(1150, 280, 250, 95, 'Container A-01', 0x1e3a5f);
-    this.buildContainer(1150, 450, 250, 95, 'Container A-02', 0x5a2323);
-    this.buildContainer(1850, 250, 95, 230, 'Container B-01', 0x24422e);
-    this.buildContainer(1850, 520, 95, 170, 'Container B-02', 0x544026);
-
-    // Pilhas de paletes no galpão
-    this.buildCrate(1320, 220, 80, 80, 'Palete 01');
-    this.buildCrate(1680, 220, 80, 80, 'Palete 02');
-
-    // ----------------------------------------------------
-    // ZONA OESTE: Complexo Laboratorial & Corredores em L (X: 100..950, Y: 550..1550)
-    // ----------------------------------------------------
-    this.buildStructure(580, 820, 28, 480, 'Parede Blindada W');
-    this.buildStructure(360, 1050, 420, 28, 'Corredor Central W');
-    this.buildStructure(360, 600, 420, 28, 'Laboratório Químico');
-    this.buildStructure(320, 820, 180, 140, 'Servidores Centrais', 0x222a38, 0x485874);
-    this.buildStructure(320, 1300, 200, 150, 'Gerador Auxiliar W', 0x2c2621, 0x705c48);
-
-    // Fileira de colunas para teste de slalom / desvio
-    this.buildPillar(780, 700, 75, 'P1');
-    this.buildPillar(780, 940, 75, 'P2');
-    this.buildPillar(780, 1180, 75, 'P3');
-    this.buildPillar(780, 1420, 75, 'P4');
-
-    // ----------------------------------------------------
-    // ZONA LESTE: Usina Termoelétrica & Sala dos Grandes Pilares (X: 2050..2900, Y: 550..1550)
-    // ----------------------------------------------------
-    // Unidade de turbina principal
-    this.buildStructure(2520, 1050, 280, 160, 'Gerador Termoelétrico', 0x332822, 0x8a6245);
-
-    // Grid monumental de pilares estruturais maciços
-    this.buildPillar(2250, 750, 90, 'P-01');
-    this.buildPillar(2520, 750, 90, 'P-02');
-    this.buildPillar(2790, 750, 90, 'P-03');
-    this.buildPillar(2250, 1350, 90, 'P-04');
-    this.buildPillar(2520, 1350, 90, 'P-05');
-    this.buildPillar(2790, 1350, 90, 'P-06');
-
-    // Subestações de energia
-    this.buildStructure(2250, 1050, 100, 150, 'Subestação Alpha', 0x252b36, 0x4f607d);
-    this.buildStructure(2790, 1050, 100, 150, 'Subestação Beta', 0x252b36, 0x4f607d);
-    this.buildBarricade(2520, 1220, 180, 26, 'ALTA TENSÃO');
-
-    // ----------------------------------------------------
-    // ZONA SUL: Posto Militar & Bloqueio Blindado (Y: 1400..1950)
-    // ----------------------------------------------------
-    // Barreiras com labirinto tático de aproximação (chicane)
-    this.buildStructure(1120, 1500, 480, 32, 'Muralha Sul Oeste');
-    this.buildStructure(1880, 1500, 480, 32, 'Muralha Sul Leste');
-    this.buildStructure(1500, 1630, 280, 32, 'Bloqueio Balístico');
-
-    // Trincheiras e sacos de areia
-    this.buildBarricade(1280, 1750, 160, 45, 'Trincheira Alfa');
-    this.buildBarricade(1720, 1750, 160, 45, 'Trincheira Bravo');
-    this.buildBarricade(1500, 1870, 240, 45, 'Check-point Final');
-
-    // Depósitos militares
-    this.buildContainer(880, 1750, 220, 90, 'Armas & Munições', 0x3d3f27);
-    this.buildContainer(2120, 1750, 220, 90, 'Suporte Tático', 0x332822);
-
-    // ----------------------------------------------------
-    // 4 CANTOS EXTERNOS (Marcos Territoriais)
-    // ----------------------------------------------------
-    // Noroeste
-    this.buildStructure(350, 280, 200, 180, 'Silos Combustível', 0x2a2c35, 0x5a6073);
-    this.buildCrate(200, 200, 70, 70, 'Barril #1');
-    this.buildCrate(480, 390, 75, 75, 'Válvula');
-
-    // Nordeste
-    this.buildStructure(2680, 280, 220, 180, 'Torre de Radar', 0x272d38, 0x566885);
-    this.buildBarricade(2680, 410, 180, 26, 'Acesso Restrito');
-
-    // Sudoeste
-    this.buildStructure(320, 1750, 190, 160, 'Quarentena', 0x2d2424, 0x6e4949);
-    this.buildBarricade(320, 1630, 150, 24, 'Bio-Hazard');
-
-    // Sudeste
-    this.buildStructure(2680, 1750, 210, 160, 'Oficina Mecânica', 0x242830, 0x485266);
-    this.buildCrate(2540, 1860, 80, 65, 'Peças');
-    this.buildCrate(2820, 1860, 75, 65, 'Ferramentas');
-
-    // Obstáculos adicionais nos corredores principais
-    this.buildCrate(1050, 1000, 75, 75, 'Carga Aberta 1');
-    this.buildCrate(1950, 1000, 75, 75, 'Carga Aberta 2');
-    this.buildPillar(1500, 760, 80, 'Coluna Norte');
-    this.buildPillar(1500, 1240, 80, 'Coluna Sul');
-  }
-
-  private buildWall(x: number, y: number, width: number, height: number): void {
-    const rect = this.add.rectangle(x, y, width, height, 0x222631);
-    rect.setStrokeStyle(2, 0x41475b);
-    rect.setDepth(1);
-    this.walls.add(rect);
-  }
-
-  private buildStructure(
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    label: string,
-    fillColor = 0x2b303e,
-    strokeColor = 0x59627e
-  ): void {
-    const shadow = this.add.rectangle(x + 8, y + 8, width, height, 0x050608, 0.6);
-    shadow.setDepth(1);
-
-    const rect = this.add.rectangle(x, y, width, height, fillColor);
-    rect.setStrokeStyle(3, strokeColor);
-    rect.setDepth(2);
-
-    const innerW = Math.max(width - 16, 4);
-    const innerH = Math.max(height - 16, 4);
-    const innerRect = this.add.rectangle(x, y, innerW, innerH, 0x1f232e);
-    innerRect.setStrokeStyle(1, 0x3d4355);
-    innerRect.setDepth(2);
-
-    if (label) {
-      this.add.text(x, y, label, {
-        fontSize: '11px',
-        color: '#8c95af',
-        fontStyle: 'bold'
-      }).setOrigin(0.5).setDepth(3);
+    const grid: string[][] = [];
+    for (let r = 0; r < ROWS; r++) {
+      grid[r] = new Array(COLS).fill('.');
     }
 
-    this.obstacles.add(rect);
-  }
+    // 3.1 Perímetro externo da instalação
+    for (let c = 0; c < COLS; c++) {
+      grid[0][c] = '#';
+      grid[ROWS - 1][c] = '#';
+    }
+    for (let r = 0; r < ROWS; r++) {
+      grid[r][0] = '#';
+      grid[r][COLS - 1] = '#';
+    }
 
-  private buildContainer(
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    label: string,
-    color = 0x1e3a5f
-  ): void {
-    const shadow = this.add.rectangle(x + 7, y + 7, width, height, 0x050608, 0.6);
-    shadow.setDepth(1);
-
-    const rect = this.add.rectangle(x, y, width, height, color);
-    rect.setStrokeStyle(2, 0x4a6572);
-    rect.setDepth(2);
-
-    // Linhas estrias de relevo do container
-    const isHorizontal = width > height;
-    const step = 24;
-    if (isHorizontal) {
-      for (let lx = x - width / 2 + step; lx < x + width / 2; lx += step) {
-        const line = this.add.rectangle(lx, y, 3, height - 10, 0x000000, 0.25);
-        line.setDepth(2);
+    // 3.2 Bloco Central (Recepção - Cols 13..26, Rows 9..20)
+    // Paredes Norte e Sul com portas amplas de 256px (Cols 18..21)
+    for (let c = 13; c <= 26; c++) {
+      if (c < 18 || c > 21) {
+        grid[9][c] = '#';
+        grid[20][c] = '#';
       }
-    } else {
-      for (let ly = y - height / 2 + step; ly < y + height / 2; ly += step) {
-        const line = this.add.rectangle(x, ly, width - 10, 3, 0x000000, 0.25);
-        line.setDepth(2);
+    }
+    // Paredes Oeste e Leste com portas amplas de 192px (Rows 14..16)
+    for (let r = 9; r <= 20; r++) {
+      if (r < 14 || r > 16) {
+        grid[r][13] = '#';
+        grid[r][26] = '#';
       }
     }
 
-    if (label) {
-      this.add.text(x, y, label, {
-        fontSize: '10px',
-        color: '#e0e0e0',
-        fontStyle: 'bold'
-      }).setOrigin(0.5).setDepth(3);
+    // 3.3 Ala Oeste - Enfermaria (Cols 1..9, Rows 9..20)
+    // Divisória com o Corredor Oeste (Col 9) com duas portas amplas de 192px (Rows 11..13 e Rows 16..18)
+    for (let r = 9; r <= 20; r++) {
+      if ((r >= 9 && r <= 10) || (r >= 14 && r <= 15) || (r >= 19 && r <= 20)) {
+        grid[r][9] = '#';
+      }
+    }
+    // Paredes Norte e Sul da Enfermaria com portas de 192px (Cols 4..6) para o anel de circulação
+    for (let c = 1; c <= 9; c++) {
+      if (c < 4 || c > 6) {
+        grid[9][c] = '#';
+        grid[20][c] = '#';
+      }
+    }
+    // Bancada médica / cabine de triagem central (Cols 4..5, Rows 14..15: 128x128 com 192px de folga em todas as direções)
+    for (let r = 14; r <= 15; r++) {
+      for (let c = 4; c <= 5; c++) {
+        grid[r][c] = '#';
+      }
     }
 
-    this.obstacles.add(rect);
+    // 3.4 Ala Leste - Gerador A (Cols 30..38, Rows 9..20)
+    // Divisória com o Corredor Leste (Col 30) com duas portas amplas de 192px (Rows 11..13 e Rows 16..18)
+    for (let r = 9; r <= 20; r++) {
+      if ((r >= 9 && r <= 10) || (r >= 14 && r <= 15) || (r >= 19 && r <= 20)) {
+        grid[r][30] = '#';
+      }
+    }
+    // Paredes Norte e Sul do Gerador com portas de 192px (Cols 33..35) para o anel de circulação
+    for (let c = 30; c <= 38; c++) {
+      if (c < 33 || c > 35) {
+        grid[9][c] = '#';
+        grid[20][c] = '#';
+      }
+    }
+    // Bloco do Gerador Principal A (Cols 34..35, Rows 14..15: 128x128 com 192px de folga ao redor)
+    for (let r = 14; r <= 15; r++) {
+      for (let c = 34; c <= 35; c++) {
+        grid[r][c] = '#';
+      }
+    }
+
+    // 3.5 Ala Norte - Contenção (Spawn do Killer: Cols 13..26, Rows 1..5)
+    for (let r = 1; r <= 5; r++) {
+      grid[r][13] = '#';
+      grid[r][26] = '#';
+    }
+    // Portão de saída aberto de 256px diretamente para o Corredor Norte (Cols 18..21)
+    for (let c = 13; c <= 26; c++) {
+      if (c < 18 || c > 21) {
+        grid[5][c] = '#';
+      }
+    }
+    // Divisórias dos setores Noroeste e Nordeste com portas amplas (Cols 4..6 e Cols 33..35)
+    for (let c = 1; c <= 9; c++) {
+      if (c < 4 || c > 6) grid[5][c] = '#';
+    }
+    for (let c = 30; c <= 38; c++) {
+      if (c < 33 || c > 35) grid[5][c] = '#';
+    }
+
+    // 3.6 Ala Sul - Manutenção & Depósito (Cols 13..26, Rows 24..28)
+    for (let r = 24; r <= 28; r++) {
+      grid[r][13] = '#';
+      grid[r][26] = '#';
+    }
+    // Portão de acesso de 256px diretamente para o Corredor Sul (Cols 18..21)
+    for (let c = 13; c <= 26; c++) {
+      if (c < 18 || c > 21) {
+        grid[24][c] = '#';
+      }
+    }
+    // Divisórias dos setores Sudoeste e Sudeste com portas amplas
+    for (let c = 1; c <= 9; c++) {
+      if (c < 4 || c > 6) grid[24][c] = '#';
+    }
+    for (let c = 30; c <= 38; c++) {
+      if (c < 33 || c > 35) grid[24][c] = '#';
+    }
+
+    // 4. Algoritmo Ganancioso de Fusão Retangular 2D (Greedy 2D Rect Merger)
+    // Reduz centenas de blocos em retângulos contíguos sem costuras internas nem quinas sobrepostas
+    const visited: boolean[][] = [];
+    for (let r = 0; r < ROWS; r++) {
+      visited[r] = new Array(COLS).fill(false);
+    }
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c] === '#' && !visited[r][c]) {
+          // Encontra a largura máxima contígua
+          let w = 0;
+          while (c + w < COLS && grid[r][c + w] === '#' && !visited[r][c + w]) {
+            w++;
+          }
+
+          // Encontra a altura máxima com essa largura
+          let h = 1;
+          while (r + h < ROWS) {
+            let fullRow = true;
+            for (let k = 0; k < w; k++) {
+              if (grid[r + h][c + k] !== '#' || visited[r + h][c + k]) {
+                fullRow = false;
+                break;
+              }
+            }
+            if (!fullRow) break;
+            h++;
+          }
+
+          // Marca como visitado
+          for (let dy = 0; dy < h; dy++) {
+            for (let dx = 0; dx < w; dx++) {
+              visited[r + dy][c + dx] = true;
+            }
+          }
+
+          const pixelW = w * TILE_SIZE;
+          const pixelH = h * TILE_SIZE;
+          const pixelX = c * TILE_SIZE + pixelW / 2;
+          const pixelY = r * TILE_SIZE + pixelH / 2;
+
+          this.createMergedWall(pixelX, pixelY, pixelW, pixelH);
+        }
+      }
+    }
+
+    // 5. Ambientação Visual, Sinalização Tática e Elementos de Orientação
+    this.createFacilitySignage();
   }
 
-  private buildPillar(x: number, y: number, size = 80, label?: string): void {
-    const shadow = this.add.rectangle(x + 5, y + 5, size, size, 0x050608, 0.6);
+  private createMergedWall(x: number, y: number, width: number, height: number): void {
+    // Sombra projetada
+    const shadow = this.add.rectangle(x + 5, y + 5, width, height, 0x07090e, 0.45);
     shadow.setDepth(1);
 
-    const rect = this.add.rectangle(x, y, size, size, 0x373e4d);
-    rect.setStrokeStyle(3, 0x67748e);
-    rect.setDepth(2);
+    // Parede estrutural sólida
+    const wall = this.add.rectangle(x, y, width, height, 0x222633);
+    wall.setStrokeStyle(2, 0x4f586f);
+    wall.setDepth(2);
+    this.walls.add(wall);
 
-    const cap = this.add.rectangle(x, y, size - 16, size - 16, 0x242833);
-    cap.setStrokeStyle(1, 0x4a556b);
-    cap.setDepth(2);
-
-    if (label) {
-      this.add.text(x, y, label, {
-        fontSize: '9px',
-        color: '#9aa0a6',
-        fontStyle: 'bold'
-      }).setOrigin(0.5).setDepth(3);
+    const body = wall.body as Phaser.Physics.Arcade.StaticBody;
+    if (body) {
+      body.updateFromGameObject();
     }
 
-    this.obstacles.add(rect);
+    // Chanfro superior / relevo arquitetônico
+    if (width > 12 && height > 12) {
+      const capW = Math.max(width - 4, 4);
+      const capH = Math.max(height - 4, 4);
+      const cap = this.add.rectangle(x, y - 2, capW, capH, 0x292f3e);
+      cap.setStrokeStyle(1, 0x3d4559);
+      cap.setDepth(2);
+    }
   }
 
-  private buildCrate(x: number, y: number, width = 70, height = 70, label?: string): void {
-    const shadow = this.add.rectangle(x + 4, y + 4, width, height, 0x050608, 0.5);
-    shadow.setDepth(1);
+  private createFacilitySignage(): void {
+    // ----------------------------------------------------
+    // SALA CENTRAL (Recepção - Spawn do Survivor: 1280, 960)
+    // ----------------------------------------------------
+    const centerDecal = this.add.circle(1280, 960, 110, 0x191c25, 0.6);
+    centerDecal.setStrokeStyle(2, 0x3d465c, 0.5);
+    centerDecal.setDepth(1);
 
-    const rect = this.add.rectangle(x, y, width, height, 0x3f352b);
-    rect.setStrokeStyle(2, 0x6e5d4a);
-    rect.setDepth(2);
+    this.add.text(1280, 720, 'SALA CENTRAL // RECEPÇÃO', {
+      fontSize: '14px',
+      color: '#8c9bb7',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
 
-    const cross1 = this.add.rectangle(x, y, width - 8, 3, 0x2b241d);
-    cross1.setDepth(2);
-    const cross2 = this.add.rectangle(x, y, 3, height - 8, 0x2b241d);
-    cross2.setDepth(2);
+    this.add.text(1280, 960, '⊕ PONTO DE SPAWN SEGURO\n4 SAÍDAS AMPLAS PARA O LOOPING', {
+      fontSize: '11px',
+      color: '#5c6982',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(1);
 
-    if (label) {
-      this.add.text(x, y, label, {
-        fontSize: '9px',
-        color: '#c9b79c',
-        fontStyle: 'bold'
-      }).setOrigin(0.5).setDepth(3);
-    }
+    // ----------------------------------------------------
+    // ALA OESTE (Enfermaria & Triagem: 320, 960)
+    // ----------------------------------------------------
+    this.add.text(320, 720, 'ALA OESTE // ENFERMARIA & TRIAGEM', {
+      fontSize: '13px',
+      color: '#709d87',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
 
-    this.obstacles.add(rect);
-  }
+    this.add.text(320, 1200, '✚ SETOR MÉDICO - 3 ACESSOS AO CORREDOR', {
+      fontSize: '10px',
+      color: '#496b5c'
+    }).setOrigin(0.5).setDepth(1);
 
-  private buildBarricade(x: number, y: number, width: number, height: number, label?: string): void {
-    const shadow = this.add.rectangle(x + 4, y + 4, width, height, 0x050608, 0.5);
-    shadow.setDepth(1);
+    // Detalhes no console central da Enfermaria (Cols 4..5, Rows 14..15 -> X: 320, Y: 960)
+    this.add.text(320, 960, '✚ CABINE DE\nTRIAGEM', {
+      fontSize: '11px',
+      color: '#a7d5be',
+      fontStyle: 'bold',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(3);
 
-    const rect = this.add.rectangle(x, y, width, height, 0x42382e);
-    rect.setStrokeStyle(2, 0xa57e3f);
-    rect.setDepth(2);
+    // ----------------------------------------------------
+    // ALA LESTE (Gerador A: 2240, 960)
+    // ----------------------------------------------------
+    this.add.text(2240, 720, 'ALA LESTE // USINA GERADOR A', {
+      fontSize: '13px',
+      color: '#c99653',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
 
-    if (label) {
-      this.add.text(x, y, label, {
-        fontSize: '9px',
-        color: '#f0c674',
-        fontStyle: 'bold'
-      }).setOrigin(0.5).setDepth(3);
-    }
+    this.add.text(2240, 1200, '⚡ FORÇA AUXILIAR - 3 ACESSOS AO CORREDOR', {
+      fontSize: '10px',
+      color: '#8a6534'
+    }).setOrigin(0.5).setDepth(1);
 
-    this.obstacles.add(rect);
+    // Detalhes no gerador central (Cols 34..35, Rows 14..15 -> X: 2240, Y: 960)
+    const genWarningZone = this.add.rectangle(2240, 960, 160, 160, 0x000000, 0);
+    genWarningZone.setStrokeStyle(2, 0xd49b3d, 0.4);
+    genWarningZone.setDepth(1);
+
+    this.add.text(2240, 960, '⚡ GERADOR A\nALTA TENSÃO', {
+      fontSize: '11px',
+      color: '#ffd073',
+      fontStyle: 'bold',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(3);
+
+    // ----------------------------------------------------
+    // ALA NORTE (Ala de Contenção - Spawn do Killer: 1280, 224)
+    // ----------------------------------------------------
+    this.add.text(1280, 100, 'ALA NORTE // CÂMARA DE CONTENÇÃO BIOLÓGICA', {
+      fontSize: '13px',
+      color: '#cc5555',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
+
+    this.add.text(1280, 224, '⚠️ ÁREA DE CONTENÇÃO - NÍVEL 4 // SPAWN DO ASSASSINO', {
+      fontSize: '10px',
+      color: '#8f3b3b',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
+
+    // Listras de advertência no portão de saída da contenção para o corredor (Y: 352)
+    const gateStripe = this.add.rectangle(1280, 352, 256, 8, 0xcc3333, 0.5);
+    gateStripe.setDepth(1);
+
+    // ----------------------------------------------------
+    // ALA SUL (Manutenção & Depósito: 1280, 1680)
+    // ----------------------------------------------------
+    this.add.text(1280, 1820, 'ALA SUL // SETOR DE MANUTENÇÃO & ENGENHARIA', {
+      fontSize: '13px',
+      color: '#8b949e',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
+
+    // ----------------------------------------------------
+    // SINALIZAÇÃO DO ANEL DE CORREDORES (LOOPING DE FUGA)
+    // ----------------------------------------------------
+    this.add.text(1280, 480, '◀◀ CORREDOR NORTE (LOOPING) ▶▶', {
+      fontSize: '11px',
+      color: '#495267',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
+
+    this.add.text(1280, 1440, '◀◀ CORREDOR SUL (LOOPING) ▶▶', {
+      fontSize: '11px',
+      color: '#495267',
+      fontStyle: 'bold'
+    }).setOrigin(0.5).setDepth(1);
+
+    this.add.text(720, 960, '▲\nC\nO\nR\nR\nE\nD\nO\nR\n\nO\nE\nS\nT\nE\n▼', {
+      fontSize: '9px',
+      color: '#424a5c',
+      fontStyle: 'bold',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(1);
+
+    this.add.text(1840, 960, '▲\nC\nO\nR\nR\nE\nD\nO\nR\n\nL\nE\nS\nT\nE\n▼', {
+      fontSize: '9px',
+      color: '#424a5c',
+      fontStyle: 'bold',
+      align: 'center'
+    }).setOrigin(0.5).setDepth(1);
   }
 
   /**
@@ -591,7 +656,8 @@ export class SandboxScene extends Phaser.Scene {
    * - Hitbox proporcional e centralizada em (0.5, 0.5)
    */
   private createKiller(): void {
-    this.killer = this.physics.add.sprite(1500, 480, 'survivor', 0);
+    // Spawn na Ala de Contenção (Norte) em área ampla e desobstruída
+    this.killer = this.physics.add.sprite(1280, 224, 'survivor', 0);
     this.killer.setDepth(10);
     this.killer.setOrigin(0.5, 0.5);
 
