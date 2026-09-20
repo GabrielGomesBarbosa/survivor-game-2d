@@ -3,18 +3,18 @@
  * @description Constantes de configuração global, limites de mundo, malha lógica e padrões do painel de debug.
  */
 
-export const WORLD_WIDTH = 3840;
-export const WORLD_HEIGHT = 2880;
+export const WORLD_WIDTH = 5120;
+export const WORLD_HEIGHT = 3840;
 export const TILE_SIZE = 64;
-export const COLS = 60;
-export const ROWS = 45;
+export const COLS = 80;
+export const ROWS = 60;
 
 export const STORAGE_KEY = 'horror_topdown_debug_settings';
 
 export const GENERATOR_DEFS = [
-  { id: 'gen-1', name: 'Gerador A', roomName: 'Ala Nordeste (Laboratório)', x: 3072, y: 512 },
-  { id: 'gen-2', name: 'Gerador B', roomName: 'Ala Sudoeste (Enfermaria)', x: 768, y: 2304 },
-  { id: 'gen-3', name: 'Gerador C', roomName: 'Ala Sudeste (Sala de Máquinas)', x: 3072, y: 2304 }
+  { id: 'gen-1', name: 'Gerador A', roomName: 'Ala Nordeste (Laboratório)', x: 4096, y: 768 },
+  { id: 'gen-2', name: 'Gerador B', roomName: 'Ala Sudoeste (Enfermaria)', x: 1024, y: 3072 },
+  { id: 'gen-3', name: 'Gerador C', roomName: 'Ala Sudeste (Sala de Máquinas)', x: 4096, y: 3072 }
 ];
 
 /**
@@ -97,9 +97,9 @@ export const DEFAULT_MONITOR_STATE: MonitorState = {
   rotationDeg: '0°',
   playerScale: '0.25x',
   hitboxPixels: '133px',
-  playerX: '1920',
-  playerY: '1408',
-  currentTile: '[30, 22]',
+  playerX: '2560',
+  playerY: '1920',
+  currentTile: '[40, 30]',
   worldSize: `${WORLD_WIDTH} x ${WORLD_HEIGHT} px (${COLS} x ${ROWS} tiles)`,
   killerState: 'PATROL',
   killerDist: '0px',

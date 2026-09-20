@@ -200,13 +200,13 @@ describe('Physics & Navigation Bounds Logic (Pure Rules)', () => {
   });
 
   it('maps world coordinates to correct tile indices within boundaries', () => {
-    const worldX = 1920;
-    const worldY = 1408;
+    const worldX = 2560;
+    const worldY = 1920;
     const col = Math.floor(worldX / TILE_SIZE);
     const row = Math.floor(worldY / TILE_SIZE);
 
-    expect(col).toBe(30);
-    expect(row).toBe(22);
+    expect(col).toBe(40);
+    expect(row).toBe(30);
     expect(col).toBeGreaterThanOrEqual(0);
     expect(col).toBeLessThan(COLS);
     expect(row).toBeGreaterThanOrEqual(0);

@@ -59,89 +59,9 @@ export class MapBuilder {
     const walls = scene.physics.add.staticGroup();
     const obstacles = scene.physics.add.staticGroup();
 
-    // 3. Montar malha lógica da planta baixa (60 colunas x 45 linhas)
-    const grid: string[][] = [];
-    for (let r = 0; r < ROWS; r++) {
-      grid[r] = new Array(COLS).fill('.');
-    }
+    // 3. Montar malha lógica da planta baixa orgânica e assimétrica (80 colunas x 60 linhas)
+    const grid: string[][] = MapBuilder.buildOrganicFacilityGrid();
 
-    // 3.1 Perímetro externo contínuo da instalação (Bordas sólidas)
-    for (let c = 0; c < COLS; c++) {
-      grid[0][c] = '#';
-      grid[ROWS - 1][c] = '#';
-    }
-    for (let r = 0; r < ROWS; r++) {
-      grid[r][0] = '#';
-      grid[r][COLS - 1] = '#';
-    }
-
-    // 3.2 Arquitetura Modular dos Setores e Alas (Grid 3x3 com Corredores e Anel Perimetral)
-    // Bandas de colunas: Oeste (4..19), Centro (23..36), Leste (40..55)
-    // Bandas de linhas: Norte (4..12), Centro (16..28), Sul (32..40)
-    // Todas as passagens e portas possuem largura de 3 a 4 ladrilhos (192px a 256px >= 128px)
-    // Corredores internos e anel perimetral de fuga possuem largura uniforme de 3 blocos (192px)
-    const colBands = [
-      { name: 'Oeste', min: 4, max: 19, doorMin: 10, doorMax: 13 },
-      { name: 'Centro', min: 23, max: 36, doorMin: 28, doorMax: 31 },
-      { name: 'Leste', min: 40, max: 55, doorMin: 46, doorMax: 49 }
-    ];
-
-    const rowBands = [
-      { name: 'Norte', min: 4, max: 12, doorMin: 7, doorMax: 9 },
-      { name: 'Centro', min: 16, max: 28, doorMin: 21, doorMax: 23 },
-      { name: 'Sul', min: 32, max: 40, doorMin: 35, doorMax: 37 }
-    ];
-
-    for (const rBand of rowBands) {
-      for (const cBand of colBands) {
-        // Parede Norte da sala (com porta cardeal centralizada)
-        for (let c = cBand.min; c <= cBand.max; c++) {
-          if (c < cBand.doorMin || c > cBand.doorMax) {
-            grid[rBand.min][c] = '#';
-          }
-        }
-        // Parede Sul da sala (com porta cardeal centralizada)
-        for (let c = cBand.min; c <= cBand.max; c++) {
-          if (c < cBand.doorMin || c > cBand.doorMax) {
-            grid[rBand.max][c] = '#';
-          }
-        }
-        // Parede Oeste da sala (com porta cardeal centralizada)
-        for (let r = rBand.min; r <= rBand.max; r++) {
-          if (r < rBand.doorMin || r > rBand.doorMax) {
-            grid[r][cBand.min] = '#';
-          }
-        }
-        // Parede Leste da sala (com porta cardeal centralizada)
-        for (let r = rBand.min; r <= rBand.max; r++) {
-          if (r < rBand.doorMin || r > rBand.doorMax) {
-            grid[r][cBand.max] = '#';
-          }
-        }
-      }
-    }
-
-    // 3.3 Alocação dos Geradores Provisórios (2x2 tiles)
-    // Gerador A: Ala Nordeste (Laboratório) - centro (3072, 512)
-    for (let r = 7; r <= 8; r++) {
-      for (let c = 47; c <= 48; c++) {
-        grid[r][c] = 'G';
-      }
-    }
-
-    // Gerador B: Ala Sudoeste (Enfermaria) - centro (768, 2304)
-    for (let r = 35; r <= 36; r++) {
-      for (let c = 11; c <= 12; c++) {
-        grid[r][c] = 'G';
-      }
-    }
-
-    // Gerador C: Ala Sudeste (Sala de Máquinas) - centro (3072, 2304)
-    for (let r = 35; r <= 36; r++) {
-      for (let c = 47; c <= 48; c++) {
-        grid[r][c] = 'G';
-      }
-    }
 
     // 4. Algoritmo Ganancioso de Fusão Retangular 2D (Greedy 2D Rect Merger)
     const visited: boolean[][] = [];
@@ -208,7 +128,7 @@ export class MapBuilder {
     easystar.setIterationsPerCalculation(10000);
 
     // 6. Criar sinalização arquitetônica da instalação
-    this.createFacilitySignage(scene);
+    MapBuilder.createFacilitySignage(scene);
 
     return {
       walls,
@@ -217,6 +137,252 @@ export class MapBuilder {
       easystar,
       grid
     };
+  }
+
+  /**
+   * Constrói a planta baixa orgânica e assimétrica da instalação (80 colunas x 60 linhas).
+   * Elimina cubículos repetitivos e cria alas temáticas autênticas com obstáculos para looping.
+   */
+  private static buildOrganicFacilityGrid(): string[][] {
+    const grid: string[][] = Array.from({ length: ROWS }, () => new Array(COLS).fill('.'));
+
+    // Helpers para traçado de paredes ortogonais e blocos estruturais
+    const hWall = (r: number, c1: number, c2: number) => {
+      const minC = Math.max(0, Math.min(c1, c2));
+      const maxC = Math.min(COLS - 1, Math.max(c1, c2));
+      if (r >= 0 && r < ROWS) {
+        for (let c = minC; c <= maxC; c++) grid[r][c] = '#';
+      }
+    };
+
+    const vWall = (c: number, r1: number, r2: number) => {
+      const minR = Math.max(0, Math.min(r1, r2));
+      const maxR = Math.min(ROWS - 1, Math.max(r1, r2));
+      if (c >= 0 && c < COLS) {
+        for (let r = minR; r <= maxR; r++) grid[r][c] = '#';
+      }
+    };
+
+    const fillBox = (r1: number, r2: number, c1: number, c2: number) => {
+      const minR = Math.max(0, Math.min(r1, r2));
+      const maxR = Math.min(ROWS - 1, Math.max(r1, r2));
+      const minC = Math.max(0, Math.min(c1, c2));
+      const maxC = Math.min(COLS - 1, Math.max(c1, c2));
+      for (let r = minR; r <= maxR; r++) {
+        for (let c = minC; c <= maxC; c++) {
+          grid[r][c] = '#';
+        }
+      }
+    };
+
+    // 1. Perímetro Externo Sólido Contínuo da Instalação
+    hWall(0, 0, COLS - 1);
+    hWall(ROWS - 1, 0, COLS - 1);
+    vWall(0, 0, ROWS - 1);
+    vWall(COLS - 1, 0, ROWS - 1);
+
+    // 2. Núcleo Central: Grande Recepção / Pátio Aberto (c in [30..49], r in [23..36])
+    // Paredes de fechamento com acessos amplos (mínimo 3 a 4 tiles)
+    hWall(23, 30, 31);
+    hWall(23, 35, 37); // Porta c = 32..34 (conexão diagonal NW)
+    hWall(23, 42, 49); // Porta cardeal c = 38..41 (corredor Norte)
+
+    hWall(36, 30, 37); // Porta cardeal c = 38..41 (corredor Sul)
+    hWall(36, 42, 45);
+    hWall(36, 49, 49); // Porta c = 46..48 (conexão SE Caldeiras)
+
+    vWall(30, 23, 27); // Porta oeste r = 28..31 (vão de 4 tiles)
+    vWall(30, 32, 36);
+
+    vWall(49, 23, 27); // Porta leste r = 28..31 (vão de 4 tiles)
+    vWall(49, 32, 36);
+
+    // Estruturas Internas de Looping da Recepção (Balcões e Colunas Táticas):
+    fillBox(26, 28, 33, 34); // Balcão NW (2x3)
+    fillBox(26, 28, 45, 46); // Balcão NE (2x3)
+    fillBox(32, 33, 33, 34); // Guichê de Segurança SW (2x2)
+    fillBox(32, 33, 45, 46); // Mesa de Informações SE (2x2)
+
+    // 3. Ala Norte: Bloco de Contenção & Airlock (c in [31..48], r in [4..19])
+    // Spawn do Killer em c = 40, r = 11
+    hWall(4, 31, 37);
+    hWall(4, 42, 48); // Saída norte para anel perimetral em c = 38..41
+
+    hWall(19, 31, 37);
+    hWall(19, 42, 48); // Saída sul com faixa de advertência em c = 38..41
+
+    vWall(31, 4, 6);
+    vWall(31, 10, 14); // Portas oeste em r = 7..9 e r = 15..17
+    vWall(31, 18, 19);
+
+    vWall(48, 4, 6);
+    vWall(48, 10, 14); // Portas leste em r = 7..9 e r = 15..17
+    vWall(48, 18, 19);
+
+    // Divisórias laterais de câmaras de isolamento (deixando centro c=37..42 desobstruído)
+    fillBox(9, 13, 35, 36);
+    fillBox(9, 13, 43, 44);
+
+    // 4. Ala Noroeste: Almoxarifado & Depósito Industrial (c in [4..26], r in [4..20])
+    // Centro da sala em c = 16, r = 12
+    hWall(4, 4, 9);
+    hWall(4, 14, 26); // Porta norte em c = 10..13
+
+    vWall(4, 4, 9);
+    vWall(4, 14, 20); // Porta oeste em r = 10..13
+
+    hWall(20, 4, 7);
+    hWall(20, 11, 19); // Portas sul em c = 8..10 e c = 20..22
+    hWall(20, 23, 26);
+
+    vWall(26, 4, 9);
+    vWall(26, 14, 20); // Porta leste em r = 10..13
+
+    // Divisória assimétrica entre Almoxarifado Oeste e Racks Leste
+    vWall(13, 4, 8);
+    vWall(13, 14, 20); // Vão central em r = 9..13
+
+    // Estante em formato de 'T' no Almoxarifado
+    hWall(9, 7, 10);
+    vWall(7, 8, 10);
+
+    // Rack em formato de 'U' no Depósito
+    hWall(15, 17, 22);
+    vWall(17, 16, 17);
+    vWall(22, 16, 17);
+
+    // Palete maciço de estocagem elevada
+    fillBox(7, 8, 18, 21);
+
+    // 5. Ala Nordeste: Laboratório de Pesquisa & Sala de Controle (c in [53..75], r in [4..20])
+    // Gerador A em c = 63..64, r = 11..12 | Centro da sala em c = 64, r = 12
+    hWall(4, 53, 59);
+    hWall(4, 64, 75); // Porta norte em c = 60..63
+
+    vWall(75, 4, 9);
+    vWall(75, 14, 20); // Porta leste em r = 10..13
+
+    hWall(20, 53, 56);
+    hWall(20, 61, 67); // Portas sul em c = 57..60 e c = 68..71
+    hWall(20, 72, 75);
+
+    vWall(53, 4, 9);
+    vWall(53, 14, 20); // Porta oeste em r = 10..13
+
+    // Anexo 1: Sala de Controle (c in [68..74], r in [5..9])
+    vWall(67, 5, 5);
+    vWall(67, 8, 9); // Porta em r = 6..7
+    hWall(9, 68, 69);
+    hWall(9, 72, 74); // Porta em c = 70..71
+
+    // Anexo 2: Sala de Descontaminação Química (c in [54..59], r in [14..19])
+    hWall(14, 54, 55);
+    hWall(14, 58, 59); // Porta em c = 56..57
+    vWall(59, 15, 16);
+    vWall(59, 19, 19); // Porta em r = 17..18
+
+    // Ilha central de looping no laboratório (Bancada de Pesquisa)
+    fillBox(15, 16, 66, 67);
+
+    // 6. Ala Sudoeste: Enfermaria & Bloco de Celas (c in [4..26], r in [40..55])
+    // Gerador B em c = 15..16, r = 47..48 | Centro da sala em c = 16, r = 48
+    hWall(40, 4, 7);
+    hWall(40, 11, 19); // Portas norte em c = 8..10 e c = 20..22
+    hWall(40, 23, 26);
+
+    vWall(4, 40, 44);
+    vWall(4, 49, 55); // Porta oeste em r = 45..48
+
+    hWall(55, 4, 9);
+    hWall(55, 13, 18); // Portas sul em c = 10..12 e c = 19..21
+    hWall(55, 22, 26);
+
+    vWall(26, 40, 45);
+    vWall(26, 50, 55); // Porta leste em r = 46..49
+
+    // Corredor das celas em r = 44 com passagens assimétricas
+    vWall(11, 40, 41); // Passagem entre Celas 1 e 2 em r = 42..43
+    vWall(18, 41, 43); // Passagem da Cela 3 em r = 40
+    hWall(44, 4, 6);
+    hWall(44, 9, 13);
+    hWall(44, 16, 21);
+    hWall(44, 24, 26);
+
+    // Biombo de Cirurgia (Looping da Ala Hospitalar)
+    fillBox(48, 51, 21, 22);
+
+    // Divisória do cubículo de observação
+    vWall(9, 47, 48);
+    vWall(9, 51, 52); // Porta em r = 49..50
+
+    // 7. Ala Sudeste: Sala de Caldeiras & Maquinário Pesado (c in [53..75], r in [40..55])
+    // Gerador C em c = 63..64, r = 47..48 | Centro da sala em c = 64, r = 48
+    hWall(40, 53, 56);
+    hWall(40, 61, 67); // Portas norte em c = 57..60 e c = 68..70
+    hWall(40, 71, 75);
+
+    vWall(75, 40, 44);
+    vWall(75, 49, 55); // Porta leste em r = 45..48
+
+    hWall(55, 53, 61);
+    hWall(55, 66, 75); // Porta sul em c = 62..65
+
+    vWall(53, 40, 45);
+    vWall(53, 50, 55); // Porta oeste em r = 46..49
+
+    // Caldeiras Industriais Maciças (Obstáculos Sólidos para Looping)
+    fillBox(44, 46, 56, 58); // Caldeira Primária A (3x3)
+    fillBox(50, 52, 56, 58); // Caldeira Secundária B (3x3)
+
+    // Divisória Solta / Baffle Wall (Quebra de Linha de Visão Direta)
+    hWall(44, 69, 71);
+    vWall(69, 45, 47);
+
+    // Pilar Estrutural de Tubulações (Looping Sul)
+    fillBox(51, 52, 68, 69);
+
+    // 8. Ala Sul: Manutenção & Subestação Elétrica (c in [31..48], r in [40..55])
+    // Centro da sala em c = 40, r = 48
+    hWall(40, 31, 37);
+    hWall(40, 42, 48); // Conexão norte com corredor de trânsito em c = 38..41
+
+    hWall(55, 31, 37);
+    hWall(55, 42, 48); // Saída sul para anel perimetral em c = 38..41
+
+    vWall(31, 40, 45);
+    vWall(31, 50, 55); // Acesso oeste para Enfermaria em r = 46..49
+
+    vWall(48, 40, 45);
+    vWall(48, 50, 55); // Acesso leste para Caldeiras em r = 46..49
+
+    // Bancos de Transformadores Elétricos
+    fillBox(44, 46, 34, 35); // Transformador Oeste (2x3)
+    fillBox(44, 46, 44, 45); // Transformador Leste (2x3)
+    fillBox(51, 52, 38, 41); // Barreira técnica de cabos (2x4)
+
+    // 9. Alocação dos Geradores Provisórios (2x2 tiles 'G')
+    // Gerador A: Ala Nordeste (Laboratório) - centro (4096, 768)
+    for (let r = 11; r <= 12; r++) {
+      for (let c = 63; c <= 64; c++) {
+        grid[r][c] = 'G';
+      }
+    }
+
+    // Gerador B: Ala Sudoeste (Enfermaria) - centro (1024, 3072)
+    for (let r = 47; r <= 48; r++) {
+      for (let c = 15; c <= 16; c++) {
+        grid[r][c] = 'G';
+      }
+    }
+
+    // Gerador C: Ala Sudeste (Sala de Máquinas) - centro (4096, 3072)
+    for (let r = 47; r <= 48; r++) {
+      for (let c = 63; c <= 64; c++) {
+        grid[r][c] = 'G';
+      }
+    }
+
+    return grid;
   }
 
   /**
@@ -257,18 +423,19 @@ export class MapBuilder {
    */
   private static createFacilitySignage(scene: Phaser.Scene): void {
     // Linha amarela de advertência do Bloco de Contenção (Spawn Killer em Ala Norte)
-    const warningLine = scene.add.rectangle(1920, 752, 256, 12, 0xca8a04, 0.85);
+    const warningLine = scene.add.rectangle(2560, 1200, 256, 12, 0xca8a04, 0.85);
     warningLine.setStrokeStyle(1, 0x18181b);
     warningLine.setDepth(0.5);
 
-    // Tapete demarcatório da Recepção Central (8x6 tiles alinhados ao grid: 512x384px centrado em 1920, 1408)
-    const receptionCarpet = scene.add.rectangle(1920, 1408, 512, 384, 0x0f172a, 0.6);
+    // Tapete demarcatório da Recepção Central (8x6 tiles alinhados ao grid: 512x384px centrado em 2560, 1920)
+    const receptionCarpet = scene.add.rectangle(2560, 1920, 512, 384, 0x0f172a, 0.6);
     receptionCarpet.setStrokeStyle(1.5, 0x334155, 0.5);
     receptionCarpet.setDepth(0.3);
 
     // Marca central de spawn do jogador
-    const spawnRing = scene.add.circle(1920, 1408, 36);
+    const spawnRing = scene.add.circle(2560, 1920, 36);
     spawnRing.setStrokeStyle(2, 0x38bdf8, 0.4);
     spawnRing.setDepth(0.4);
   }
 }
+

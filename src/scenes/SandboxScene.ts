@@ -114,8 +114,8 @@ export class SandboxScene extends Phaser.Scene {
     });
 
     // 4. Entities & Systems
-    this.player = new Player(this, 1920, 1408, this.debugPanel.settings);
-    this.killer = new Killer(this, 1920, 544, this.debugPanel.settings, this.easystar, this.mapData.navGrid, this.mapData.walls, this.mapData.obstacles);
+    this.player = new Player(this, 2560, 1920, this.debugPanel.settings);
+    this.killer = new Killer(this, 2560, 736, this.debugPanel.settings, this.easystar, this.mapData.navGrid, this.mapData.walls, this.mapData.obstacles);
     this.generators = GENERATOR_DEFS.map((def) => new Generator(this, def, this.mapData.obstacles));
     this.skillCheck = new SkillCheckSystem(this);
     this.repairPrompt = new RepairPromptUI(this);

@@ -449,8 +449,8 @@ export interface CircleClampResult {
  * @param radius Raio da hitbox circular.
  * @param navGrid Matriz de navegação onde 1 = parede/sólido, 0 = livre.
  * @param tileSize Tamanho do bloco em pixels (padrão: 64).
- * @param worldWidth Largura total do mapa (padrão: 3840).
- * @param worldHeight Altura total do mapa (padrão: 2880).
+ * @param worldWidth Largura total do mapa (padrão: 5120).
+ * @param worldHeight Altura total do mapa (padrão: 3840).
  */
 export function clampCircleAgainstNavGrid(
   x: number,
@@ -458,8 +458,8 @@ export function clampCircleAgainstNavGrid(
   radius: number,
   navGrid: number[][],
   tileSize: number = 64,
-  worldWidth: number = 3840,
-  worldHeight: number = 2880
+  worldWidth: number = 5120,
+  worldHeight: number = 3840
 ): CircleClampResult {
   let curX = x;
   let curY = y;
@@ -787,13 +787,13 @@ export interface PatrolTarget {
  * Centros das salas e cômodos principais da instalação (sem nós vazios de corredores).
  */
 export const MAJOR_FACILITY_ROOMS: PatrolTarget[] = [
-  { name: 'Recepção Central', x: 1920, y: 1408, type: 'room' },
-  { name: 'Ala Norte (Contenção)', x: 1920, y: 544, type: 'room' },
-  { name: 'Ala Nordeste (Laboratório)', x: 3072, y: 512, type: 'room' },
-  { name: 'Ala Noroeste (Depósito)', x: 768, y: 512, type: 'room' },
-  { name: 'Ala Sudoeste (Enfermaria)', x: 768, y: 2304, type: 'room' },
-  { name: 'Ala Sudeste (Sala de Máquinas)', x: 3072, y: 2304, type: 'room' },
-  { name: 'Ala Sul (Manutenção)', x: 1920, y: 2304, type: 'room' }
+  { name: 'Recepção Central', x: 2560, y: 1920, type: 'room' },
+  { name: 'Ala Norte (Contenção)', x: 2560, y: 736, type: 'room' },
+  { name: 'Ala Nordeste (Laboratório)', x: 4096, y: 768, type: 'room' },
+  { name: 'Ala Noroeste (Depósito)', x: 1024, y: 768, type: 'room' },
+  { name: 'Ala Sudoeste (Enfermaria)', x: 1024, y: 3072, type: 'room' },
+  { name: 'Ala Sudeste (Sala de Máquinas)', x: 4096, y: 3072, type: 'room' },
+  { name: 'Ala Sul (Manutenção)', x: 2560, y: 3072, type: 'room' }
 ];
 
 /**
