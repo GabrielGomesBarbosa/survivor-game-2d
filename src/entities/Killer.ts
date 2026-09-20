@@ -8,7 +8,7 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, choosePatrolTarget, MAJOR_FACILITY_ROOMS } from '../utils/gameLogic';
 import { Player } from './Player';
 import { Generator } from './Generator';
 
@@ -40,23 +40,6 @@ export class Killer {
   private navGrid: number[][];
   private walls: Phaser.Physics.Arcade.StaticGroup;
   private obstacles: Phaser.Physics.Arcade.StaticGroup;
-
-  // Waypoints pré-calibrados nos eixos de circulação
-  private patrolWaypoints: Array<{ x: number; y: number }> = [
-    { x: 1280, y: 480 },  // Corredor Norte Centro
-    { x: 720, y: 480 },   // Corredor Norte / Oeste
-    { x: 1840, y: 480 },  // Corredor Norte / Leste
-    { x: 720, y: 960 },   // Corredor Oeste Central
-    { x: 1840, y: 960 },  // Corredor Leste Central
-    { x: 1280, y: 1440 }, // Corredor Sul Centro
-    { x: 720, y: 1440 },  // Corredor Sul / Oeste
-    { x: 1840, y: 1440 }, // Corredor Sul / Leste
-    { x: 320, y: 960 },   // Enfermaria (Ala Oeste)
-    { x: 2240, y: 960 },  // Gerador A (Ala Leste)
-    { x: 1280, y: 960 },  // Recepção Central
-    { x: 1280, y: 224 },  // Ala de Contenção (Norte)
-    { x: 1280, y: 1680 }  // Setor de Manutenção (Sul)
-  ];
 
   /**
    * Instancia e inicializa o Killer.
@@ -350,19 +333,16 @@ export class Killer {
   }
 
   /**
-   * Escolhe um novo ponto de ronda (50% de chance de inspecionar gerador incompleto).
+   * Escolhe um novo ponto de ronda priorizando geradores incompletos e cômodos principais.
    */
   public pickNewPatrolTarget(incompleteGenerators: Generator[]): void {
-    if (incompleteGenerators.length > 0 && Math.random() < 0.5) {
-      const targetGen = Phaser.Utils.Array.GetRandom(incompleteGenerators);
-      const offsetX = Phaser.Math.Between(-35, 35);
-      const offsetY = Phaser.Math.Between(-35, 35);
-      this.patrolTarget.set(targetGen.x + offsetX, targetGen.y + offsetY);
-    } else {
-      const randomWp = Phaser.Utils.Array.GetRandom(this.patrolWaypoints);
-      const offsetX = Phaser.Math.Between(-25, 25);
-      const offsetY = Phaser.Math.Between(-25, 25);
-      this.patrolTarget.set(randomWp.x + offsetX, randomWp.y + offsetY);
+    const candidateGens = (incompleteGenerators || []).map((g) => ({ name: g.name, x: g.x, y: g.y }));
+    const target = choosePatrolTarget(candidateGens, MAJOR_FACILITY_ROOMS);
+
+    if (target) {
+      const offsetX = Phaser.Math.Between(-30, 30);
+      const offsetY = Phaser.Math.Between(-30, 30);
+      this.patrolTarget.set(target.x + offsetX, target.y + offsetY);
     }
 
     this.patrolPath = [];
@@ -574,12 +554,14 @@ export class Killer {
 
     if (this.state === 'CHASE') {
       if (this.hasDirectLOS) {
-        this.aStarGraphic.lineStyle(2.5, 0x00ff88, 0.7);
+        // Linha de Visão Direta (LOS) - vermelho sangue vibrante
+        this.aStarGraphic.lineStyle(3.5, 0xff2222, 0.95);
         this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, player.x, player.y);
-        this.aStarGraphic.fillStyle(0x00ff88, 0.4);
-        this.aStarGraphic.fillCircle(player.x, player.y, 8);
+        this.aStarGraphic.fillStyle(0xff2222, 0.7);
+        this.aStarGraphic.fillCircle(player.x, player.y, 9);
       } else if (this.currentChasePath && this.currentChasePath.length > 0) {
-        this.aStarGraphic.lineStyle(3, 0x00d4ff, 0.85);
+        // Rota contornando paredes (A*) - vermelho vibrante de alta visibilidade
+        this.aStarGraphic.lineStyle(3.5, 0xff2222, 0.95);
 
         const currentNode = this.currentChasePath[this.currentPathIndex];
         if (currentNode) {
@@ -594,27 +576,30 @@ export class Killer {
 
         const lastNode = this.currentChasePath[this.currentChasePath.length - 1];
         if (lastNode) {
-          this.aStarGraphic.lineStyle(2, 0xffaa00, 0.8);
           this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, player.x, player.y);
         }
 
+        // Desenhar os nós da rota como balizas destacadas
         for (let i = 0; i < this.currentChasePath.length; i++) {
           const node = this.currentChasePath[i];
           if (i === this.currentPathIndex) {
-            this.aStarGraphic.fillStyle(0xffbb00, 0.9);
-            this.aStarGraphic.fillCircle(node.x, node.y, 7);
-            this.aStarGraphic.lineStyle(2, 0xffffff, 1);
+            // Destino imediato
+            this.aStarGraphic.fillStyle(0xffffff, 1);
+            this.aStarGraphic.fillCircle(node.x, node.y, 6);
+            this.aStarGraphic.lineStyle(2.5, 0xff2222, 1);
             this.aStarGraphic.strokeCircle(node.x, node.y, 10);
           } else if (i > this.currentPathIndex) {
-            this.aStarGraphic.fillStyle(0x00d4ff, 0.7);
+            // Nós futuros
+            this.aStarGraphic.fillStyle(0xff3333, 0.85);
             this.aStarGraphic.fillCircle(node.x, node.y, 5);
-            this.aStarGraphic.lineStyle(1.5, 0x0088cc, 0.5);
+            this.aStarGraphic.lineStyle(1.5, 0xff6666, 0.6);
             this.aStarGraphic.strokeCircle(node.x, node.y, 7);
           }
         }
       }
     } else if (this.patrolPath && this.patrolPath.length > 0) {
-      this.aStarGraphic.lineStyle(1.5, 0x88bbff, 0.4);
+      // Rota de patrulha A* - vermelho vivo com boa opacidade e contraste
+      this.aStarGraphic.lineStyle(3, 0xff3333, 0.9);
       const currentNode = this.patrolPath[this.patrolPathIndex];
       if (currentNode) {
         this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, currentNode.x, currentNode.y);
@@ -624,6 +609,20 @@ export class Killer {
         const n2 = this.patrolPath[i + 1];
         this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
       }
+
+      // Marcador final de ronda do gerador/cômodo
+      this.aStarGraphic.fillStyle(0xff2222, 0.9);
+      this.aStarGraphic.fillCircle(this.patrolTarget.x, this.patrolTarget.y, 7);
+      this.aStarGraphic.lineStyle(2, 0xffffff, 0.95);
+      this.aStarGraphic.strokeCircle(this.patrolTarget.x, this.patrolTarget.y, 11);
+    } else {
+      // Linha direta até o alvo de ronda quando visível
+      this.aStarGraphic.lineStyle(2.5, 0xff3333, 0.8);
+      this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, this.patrolTarget.x, this.patrolTarget.y);
+      this.aStarGraphic.fillStyle(0xff2222, 0.85);
+      this.aStarGraphic.fillCircle(this.patrolTarget.x, this.patrolTarget.y, 7);
+      this.aStarGraphic.lineStyle(2, 0xffffff, 0.95);
+      this.aStarGraphic.strokeCircle(this.patrolTarget.x, this.patrolTarget.y, 11);
     }
   }
 

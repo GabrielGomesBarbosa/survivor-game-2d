@@ -277,27 +277,6 @@ export class MapBuilder {
     warningLine.setStrokeStyle(1, 0x18181b);
     warningLine.setDepth(0.5);
 
-    // Faixas de circulação e passadeiras nos cruzamentos principais
-    const intersections = [
-      { x: 720, y: 480 },
-      { x: 1840, y: 480 },
-      { x: 720, y: 1440 },
-      { x: 1840, y: 1440 }
-    ];
-
-    intersections.forEach((pos) => {
-      const crossZone = scene.add.rectangle(pos.x, pos.y, 80, 80, 0x1e293b, 0.4);
-      crossZone.setStrokeStyle(1.5, 0x3b82f6, 0.4);
-      crossZone.setDepth(0.4);
-
-      const crosshair = scene.add.text(pos.x, pos.y, '+', {
-        fontSize: '18px',
-        color: '#3b82f6',
-        fontStyle: 'bold'
-      }).setOrigin(0.5).setAlpha(0.5);
-      crosshair.setDepth(0.5);
-    });
-
     // Tapete demarcatório da Recepção Central
     const receptionCarpet = scene.add.rectangle(1280, 960, 480, 380, 0x0f172a, 0.6);
     receptionCarpet.setStrokeStyle(1.5, 0x334155, 0.5);

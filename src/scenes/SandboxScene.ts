@@ -47,7 +47,7 @@ export class SandboxScene extends Phaser.Scene {
       frameWidth: survivorMeta.frameWidth, frameHeight: survivorMeta.frameHeight
     });
     this.load.spritesheet('generator', 'assets/generator.png', {
-      frameWidth: Math.floor(generatorMeta.frameWidth / 3), frameHeight: generatorMeta.frameHeight
+      frameWidth: generatorMeta.frameWidth, frameHeight: generatorMeta.frameHeight
     });
   }
 
