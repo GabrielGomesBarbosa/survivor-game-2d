@@ -1,32 +1,22 @@
 /**
  * @file Killer.ts
- * @description Entidade do Assassino (Killer) com IA baseada em Máquina de Estados Finitos (FSM: PATROL/CHASE),
- * detecção em raio, linha de visão desobstruída (LOS), contorno inteligente de quinas via A* (EasyStar.js),
- * tratamento de colisão não-elástica anti-tunelamento e reação a ruídos de explosão.
+ * @description Entidade física do Assassino (Killer / Pawn).
+ * Executa comandos de controle de baixo nível (movimentação, rotação, animação e renderização de depuração),
+ * delegando as decisões estratégicas da IA ao seu controlador desacoplado (KillerAIController).
  */
 
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity, choosePatrolTarget, MAJOR_FACILITY_ROOMS } from '../utils/gameLogic';
+import { resolveAntiPushVelocity } from '../utils/gameLogic';
 import { Player } from './Player';
 import { Generator } from './Generator';
+import { IKillerController } from '../controllers/KillerController';
+import { KillerAIController, IKillerPawn } from '../controllers/KillerAIController';
 
-export type KillerState = 'PATROL' | 'CHASE';
-
-export class Killer {
+export class Killer implements IKillerPawn {
   public sprite: Phaser.Physics.Arcade.Sprite;
-  public state: KillerState = 'PATROL';
-  public patrolTarget: Phaser.Math.Vector2;
-  public patrolWaitTimer = 0;
-
-  // Rotação e visada
-  public hasDirectLOS = false;
-  private pathRecalcTimer = 0;
-  private currentChasePath: Array<{ x: number; y: number }> = [];
-  private currentPathIndex = 0;
-  private patrolPath: Array<{ x: number; y: number }> = [];
-  private patrolPathIndex = 0;
+  public controller!: IKillerController;
 
   // Ataque e colisão
   private lastAttackTime = 0;
@@ -43,14 +33,6 @@ export class Killer {
 
   /**
    * Instancia e inicializa o Killer.
-   * @param {Phaser.Scene} scene - Cena do Phaser.
-   * @param {number} x - Posição X inicial (ex: 1280).
-   * @param {number} y - Posição Y inicial (ex: 224 na Contenção).
-   * @param {DebugSettings} settings - Parâmetros iniciais.
-   * @param {EasyStar.js} easystar - Instância de pathfinding A*.
-   * @param {number[][]} navGrid - Matriz de navegação lógica.
-   * @param {Phaser.Physics.Arcade.StaticGroup} walls - Grupo estático de paredes.
-   * @param {Phaser.Physics.Arcade.StaticGroup} obstacles - Grupo estático de obstáculos/geradores.
    */
   constructor(
     scene: Phaser.Scene,
@@ -67,7 +49,6 @@ export class Killer {
     this.navGrid = navGrid;
     this.walls = walls;
     this.obstacles = obstacles;
-    this.patrolTarget = new Phaser.Math.Vector2(1280, 480);
 
     // Sprite físico do Killer (clone com tom avermelhado e escala 1.28x)
     this.sprite = scene.physics.add.sprite(x, y, 'survivor', 0);
@@ -88,6 +69,20 @@ export class Killer {
 
     this.aStarGraphic = scene.add.graphics();
     this.aStarGraphic.setDepth(6);
+
+    // Inicializa com o controlador padrão de IA
+    this.setController(new KillerAIController(this));
+  }
+
+  /**
+   * Permite alternar dinamicamente o controlador do Killer (bot de IA, jogador humano ou rede multiplayer).
+   */
+  public setController(controller: IKillerController): void {
+    this.controller = controller;
+  }
+
+  public get state(): string {
+    return this.controller ? this.controller.getState() : 'PATROL';
   }
 
   /**
@@ -109,267 +104,71 @@ export class Killer {
   }
 
   /**
-   * Atualização principal por frame da IA do Assassino.
-   * @param {number} delta - Delta em milissegundos.
-   * @param {Player} player - Entidade do jogador alvo.
-   * @param {Generator[]} incompleteGenerators - Lista de geradores que ainda requerem reparo.
-   * @param {DebugSettings} settings - Parâmetros de velocidade e IA.
+   * Atualização principal delegada ao controlador ativo.
    */
-  public update(
-    delta: number,
-    player: Player,
-    incompleteGenerators: Generator[],
-    settings: DebugSettings
-  ): void {
-    this.handleAI(delta, player, incompleteGenerators, settings);
-    this.updateVisionGraphic(settings, player);
-    this.updateAStarGraphic(settings, player);
-  }
-
-  /**
-   * Lógica da Máquina de Estados (FSM) e perseguição inteligente com A*.
-   */
-  private handleAI(
-    delta: number,
-    player: Player,
-    incompleteGenerators: Generator[],
-    settings: DebugSettings
-  ): void {
-    if (!settings.killerAiEnabled) {
-      this.sprite.setVelocity(0, 0);
-      if (this.sprite.anims.isPlaying) {
-        this.sprite.anims.stop();
-        this.sprite.setFrame(0);
-      }
-      return;
-    }
-
-    const distToPlayer = Phaser.Math.Distance.Between(
-      this.sprite.x,
-      this.sprite.y,
-      player.x,
-      player.y
-    );
-
-    const detectionRadius = settings.detectionRadius;
-    const loseRadius = detectionRadius * 1.5;
-
-    // Transição de estado
-    if (this.state === 'PATROL') {
-      if (distToPlayer <= detectionRadius) {
-        this.state = 'CHASE';
-        this.currentChasePath = [];
-        this.currentPathIndex = 0;
-        this.pathRecalcTimer = 300;
-      }
-    } else if (this.state === 'CHASE') {
-      if (distToPlayer > loseRadius) {
-        this.state = 'PATROL';
-        this.currentChasePath = [];
-        this.pickNewPatrolTarget(incompleteGenerators);
-      }
-    }
-
-    // Execução do estado
-    if (this.state === 'CHASE') {
-      const speed = settings.killerSpeed;
-
-      if (distToPlayer < 24) {
-        // Encurralou o jogador: mantém pressão sem atravessar
-        this.sprite.setVelocity(0, 0);
-        if (this.sprite.anims.isPlaying) {
-          this.sprite.anims.stop();
-          this.sprite.setFrame(0);
-        }
-
-        const dx = player.x - this.sprite.x;
-        const dy = player.y - this.sprite.y;
-        const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
-        this.rotateTowards(targetAngle, delta, 14);
-      } else {
-        // Verificar linha direta de visão (Line of Sight)
-        this.hasDirectLOS = this.hasLineOfSight(
-          this.sprite.x,
-          this.sprite.y,
-          player.x,
-          player.y
-        );
-
-        if (this.hasDirectLOS) {
-          this.currentChasePath = [];
-          const dx = player.x - this.sprite.x;
-          const dy = player.y - this.sprite.y;
-          const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-
-          this.sprite.setVelocity(moveVec.x * speed, moveVec.y * speed);
-
-          if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== 'run') {
-            this.sprite.anims.play('run', true);
-          }
-
-          const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
-          this.rotateTowards(targetAngle, delta, 14);
-        } else {
-          // Visão bloqueada por obstáculos: A* Pathfinding
-          this.pathRecalcTimer += delta;
-          if (this.pathRecalcTimer >= 250 || this.currentChasePath.length === 0) {
-            this.pathRecalcTimer = 0;
-            this.calculateAStarPath(this.sprite.x, this.sprite.y, player.x, player.y);
-          }
-
-          if (this.currentChasePath.length > 0) {
-            const targetNode = this.currentChasePath[this.currentPathIndex];
-            const distToNode = Phaser.Math.Distance.Between(
-              this.sprite.x,
-              this.sprite.y,
-              targetNode.x,
-              targetNode.y
-            );
-
-            if (distToNode < 36 && this.currentPathIndex < this.currentChasePath.length - 1) {
-              this.currentPathIndex++;
-            }
-
-            // String pulling: atalho se já houver LOS para o próximo nó
-            if (this.currentPathIndex + 1 < this.currentChasePath.length) {
-              const nextNode = this.currentChasePath[this.currentPathIndex + 1];
-              if (this.hasLineOfSight(this.sprite.x, this.sprite.y, nextNode.x, nextNode.y)) {
-                this.currentPathIndex++;
-              }
-            }
-
-            const activeNode = this.currentChasePath[this.currentPathIndex];
-            const dx = activeNode.x - this.sprite.x;
-            const dy = activeNode.y - this.sprite.y;
-            const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-
-            this.sprite.setVelocity(moveVec.x * speed, moveVec.y * speed);
-
-            if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== 'run') {
-              this.sprite.anims.play('run', true);
-            }
-
-            const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
-            this.rotateTowards(targetAngle, delta, 12);
-          } else {
-            const dx = player.x - this.sprite.x;
-            const dy = player.y - this.sprite.y;
-            const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-            this.sprite.setVelocity(moveVec.x * speed * 0.5, moveVec.y * speed * 0.5);
-          }
-        }
-      }
-    } else {
-      // Estado PATROL
-      const distToTarget = Phaser.Math.Distance.Between(
-        this.sprite.x,
-        this.sprite.y,
-        this.patrolTarget.x,
-        this.patrolTarget.y
-      );
-
-      if (distToTarget < 38) {
-        this.sprite.setVelocity(0, 0);
-        if (this.sprite.anims.isPlaying) {
-          this.sprite.anims.stop();
-          this.sprite.setFrame(0);
-        }
-
-        this.patrolWaitTimer += delta;
-        if (this.patrolWaitTimer >= 1800) {
-          this.patrolWaitTimer = 0;
-          this.pickNewPatrolTarget(incompleteGenerators);
-        }
-      } else {
-        const patrolSpeed = settings.killerSpeed * 0.45;
-
-        if (this.hasLineOfSight(this.sprite.x, this.sprite.y, this.patrolTarget.x, this.patrolTarget.y)) {
-          this.patrolPath = [];
-          const dx = this.patrolTarget.x - this.sprite.x;
-          const dy = this.patrolTarget.y - this.sprite.y;
-          const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-
-          this.sprite.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
-
-          if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== 'walk') {
-            this.sprite.anims.play('walk', true);
-          }
-
-          const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
-          this.rotateTowards(targetAngle, delta, 5);
-        } else {
-          if (this.patrolPath.length > 0) {
-            const targetNode = this.patrolPath[this.patrolPathIndex];
-            const distToNode = Phaser.Math.Distance.Between(
-              this.sprite.x,
-              this.sprite.y,
-              targetNode.x,
-              targetNode.y
-            );
-
-            if (distToNode < 36 && this.patrolPathIndex < this.patrolPath.length - 1) {
-              this.patrolPathIndex++;
-            }
-
-            const activeNode = this.patrolPath[this.patrolPathIndex];
-            const dx = activeNode.x - this.sprite.x;
-            const dy = activeNode.y - this.sprite.y;
-            const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-
-            this.sprite.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
-
-            if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== 'walk') {
-              this.sprite.anims.play('walk', true);
-            }
-
-            const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
-            this.rotateTowards(targetAngle, delta, 6);
-          } else {
-            this.calculatePatrolPath(this.sprite.x, this.sprite.y, this.patrolTarget.x, this.patrolTarget.y);
-          }
-        }
-      }
+  public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
+    if (this.controller) {
+      this.controller.update(delta, player, generators, settings);
     }
   }
 
   /**
-   * Escolhe um novo ponto de ronda priorizando geradores incompletos e cômodos principais.
-   */
-  public pickNewPatrolTarget(incompleteGenerators: Generator[]): void {
-    const candidateGens = (incompleteGenerators || []).map((g) => ({ name: g.name, x: g.x, y: g.y }));
-    const target = choosePatrolTarget(candidateGens, MAJOR_FACILITY_ROOMS);
-
-    if (target) {
-      const offsetX = Phaser.Math.Between(-30, 30);
-      const offsetY = Phaser.Math.Between(-30, 30);
-      this.patrolTarget.set(target.x + offsetX, target.y + offsetY);
-    }
-
-    this.patrolPath = [];
-    this.patrolPathIndex = 0;
-    this.calculatePatrolPath(this.sprite.x, this.sprite.y, this.patrolTarget.x, this.patrolTarget.y);
-  }
-
-  /**
-   * Alerta imediatamente o Killer em direção a uma explosão de gerador.
-   * @param {number} x - Coordenada X da explosão.
-   * @param {number} y - Coordenada Y da explosão.
+   * Encaminha sinal de ruído ao controlador.
    */
   public alertToNoise(x: number, y: number): void {
-    if (this.state === 'PATROL') {
-      this.patrolTarget.set(x, y);
-      this.patrolPath = [];
-      this.patrolPathIndex = 0;
-      this.patrolWaitTimer = 0;
-      this.calculatePatrolPath(this.sprite.x, this.sprite.y, x, y);
+    if (this.controller) {
+      this.controller.alertToNoise(x, y);
+    }
+  }
+
+  // ==========================================
+  // ATUADORES FÍSICOS (Comandos de Controle)
+  // ==========================================
+
+  public setVelocity(vx: number, vy: number): void {
+    this.sprite.setVelocity(vx, vy);
+  }
+
+  public stopMovement(): void {
+    this.sprite.setVelocity(0, 0);
+  }
+
+  public rotateTowards(targetAngle: number, delta: number, turnSpeed: number): void {
+    let currentAngle = this.sprite.rotation;
+    if (typeof currentAngle !== 'number' || isNaN(currentAngle) || !isFinite(currentAngle)) {
+      currentAngle = targetAngle;
+      this.sprite.rotation = targetAngle;
+    }
+    currentAngle = Phaser.Math.Angle.Wrap(currentAngle);
+
+    const diff = Phaser.Math.Angle.Wrap(targetAngle - currentAngle);
+    const deltaSec = Math.min(delta / 1000, 0.1);
+    const maxStep = turnSpeed * deltaSec;
+
+    if (Math.abs(diff) <= maxStep) {
+      this.sprite.rotation = targetAngle;
+    } else {
+      this.sprite.rotation = Phaser.Math.Angle.Wrap(currentAngle + Math.sign(diff) * maxStep);
+    }
+  }
+
+  public playAnimation(key: string): void {
+    if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== key) {
+      this.sprite.anims.play(key, true);
+    }
+  }
+
+  public stopAnimation(frame?: number): void {
+    if (this.sprite.anims.isPlaying) {
+      this.sprite.anims.stop();
+    }
+    if (typeof frame === 'number') {
+      this.sprite.setFrame(frame);
     }
   }
 
   /**
-   * Tratamento de colisão física sólida não-elástica com o Player (Zero Regressão contra Tunelamento):
-   * Anula a velocidade frontal de aproximação mútua, impedindo que o Killer empurre o Player para as paredes.
-   * @param {Player} player - Instância do jogador.
-   * @param {() => void} onAttack - Callback disparado quando o ataque é registrado.
+   * Tratamento de colisão física sólida não-elástica com o Player (Anti-Tunelamento).
    */
   public handlePlayerCollision(player: Player, onAttack?: () => void): void {
     if (!this.sprite || !player.sprite || !this.sprite.body || !player.sprite.body) return;
@@ -396,7 +195,7 @@ export class Killer {
   }
 
   /**
-   * Verifica se há linha de visão desobstruída (Line of Sight - LOS).
+   * Verifica linha de visão desobstruída (Line of Sight - LOS).
    */
   public hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean {
     const dx = x2 - x1;
@@ -432,7 +231,16 @@ export class Killer {
     return true;
   }
 
-  private calculateAStarPath(fromX: number, fromY: number, toX: number, toY: number): void {
+  /**
+   * Executa o cálculo de caminho A* usando EasyStar.js.
+   */
+  public calculatePath(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    onPathFound: (path: Array<{ x: number; y: number }>) => void
+  ): void {
     const startCol = Phaser.Math.Clamp(Math.floor(fromX / TILE_SIZE), 0, COLS - 1);
     const startRow = Phaser.Math.Clamp(Math.floor(fromY / TILE_SIZE), 0, ROWS - 1);
     const endCol = Phaser.Math.Clamp(Math.floor(toX / TILE_SIZE), 0, COLS - 1);
@@ -444,33 +252,11 @@ export class Killer {
 
     this.easystar.findPath(safeStart.x, safeStart.y, safeEnd.x, safeEnd.y, (path) => {
       if (path && path.length > 0) {
-        this.currentChasePath = path.map((p) => ({
+        const mapped = path.map((p) => ({
           x: p.x * TILE_SIZE + TILE_SIZE / 2,
           y: p.y * TILE_SIZE + TILE_SIZE / 2
         }));
-        this.currentPathIndex = this.currentChasePath.length > 1 ? 1 : 0;
-      }
-    });
-    this.easystar.calculate();
-  }
-
-  private calculatePatrolPath(fromX: number, fromY: number, toX: number, toY: number): void {
-    const startCol = Phaser.Math.Clamp(Math.floor(fromX / TILE_SIZE), 0, COLS - 1);
-    const startRow = Phaser.Math.Clamp(Math.floor(fromY / TILE_SIZE), 0, ROWS - 1);
-    const endCol = Phaser.Math.Clamp(Math.floor(toX / TILE_SIZE), 0, COLS - 1);
-    const endRow = Phaser.Math.Clamp(Math.floor(toY / TILE_SIZE), 0, ROWS - 1);
-
-    const safeStart = this.getNearestWalkableTile(startCol, startRow);
-    const safeEnd = this.getNearestWalkableTile(endCol, endRow);
-    if (!safeStart || !safeEnd) return;
-
-    this.easystar.findPath(safeStart.x, safeStart.y, safeEnd.x, safeEnd.y, (path) => {
-      if (path && path.length > 0) {
-        this.patrolPath = path.map((p) => ({
-          x: p.x * TILE_SIZE + TILE_SIZE / 2,
-          y: p.y * TILE_SIZE + TILE_SIZE / 2
-        }));
-        this.patrolPathIndex = this.patrolPath.length > 1 ? 1 : 0;
+        onPathFound(mapped);
       }
     });
     this.easystar.calculate();
@@ -494,26 +280,11 @@ export class Killer {
     return null;
   }
 
-  private rotateTowards(targetAngle: number, delta: number, turnSpeed: number): void {
-    let currentAngle = this.sprite.rotation;
-    if (typeof currentAngle !== 'number' || isNaN(currentAngle) || !isFinite(currentAngle)) {
-      currentAngle = targetAngle;
-      this.sprite.rotation = targetAngle;
-    }
-    currentAngle = Phaser.Math.Angle.Wrap(currentAngle);
+  // ==========================================
+  // RENDERIZAÇÃO DE DEPURAÇÃO
+  // ==========================================
 
-    const diff = Phaser.Math.Angle.Wrap(targetAngle - currentAngle);
-    const deltaSec = Math.min(delta / 1000, 0.1);
-    const maxStep = turnSpeed * deltaSec;
-
-    if (Math.abs(diff) <= maxStep) {
-      this.sprite.rotation = targetAngle;
-    } else {
-      this.sprite.rotation = Phaser.Math.Angle.Wrap(currentAngle + Math.sign(diff) * maxStep);
-    }
-  }
-
-  private updateVisionGraphic(settings: DebugSettings, player: Player): void {
+  public renderVisionGraphic(settings: DebugSettings, targetPos: { x: number; y: number }, isChase: boolean): void {
     if (!this.visionGraphic) return;
     this.visionGraphic.clear();
 
@@ -527,14 +298,14 @@ export class Killer {
     this.visionGraphic.lineStyle(1.5, 0xf0c674, 0.25);
     this.visionGraphic.strokeCircle(kx, ky, loseRadius);
 
-    if (this.state === 'CHASE') {
+    if (isChase) {
       this.visionGraphic.fillStyle(0xff3333, 0.1);
       this.visionGraphic.fillCircle(kx, ky, detectionRadius);
       this.visionGraphic.lineStyle(2, 0xff2222, 0.7);
       this.visionGraphic.strokeCircle(kx, ky, detectionRadius);
 
       this.visionGraphic.lineStyle(2, 0xff2222, 0.6);
-      this.visionGraphic.lineBetween(kx, ky, player.x, player.y);
+      this.visionGraphic.lineBetween(kx, ky, targetPos.x, targetPos.y);
     } else {
       this.visionGraphic.fillStyle(0xff8833, 0.05);
       this.visionGraphic.fillCircle(kx, ky, detectionRadius);
@@ -542,54 +313,56 @@ export class Killer {
       this.visionGraphic.strokeCircle(kx, ky, detectionRadius);
 
       this.visionGraphic.lineStyle(1, 0x88bbff, 0.25);
-      this.visionGraphic.lineBetween(kx, ky, this.patrolTarget.x, this.patrolTarget.y);
+      this.visionGraphic.lineBetween(kx, ky, targetPos.x, targetPos.y);
     }
   }
 
-  private updateAStarGraphic(settings: DebugSettings, player: Player): void {
+  public renderRouteGraphic(
+    settings: DebugSettings,
+    path: Array<{ x: number; y: number }>,
+    pathIndex: number,
+    isChase: boolean,
+    hasDirectLOS: boolean,
+    targetPos: { x: number; y: number }
+  ): void {
     if (!this.aStarGraphic) return;
     this.aStarGraphic.clear();
 
     if (!settings.showAStarPath || !settings.killerAiEnabled) return;
 
-    if (this.state === 'CHASE') {
-      if (this.hasDirectLOS) {
-        // Linha de Visão Direta (LOS) - vermelho sangue vibrante
+    if (isChase) {
+      if (hasDirectLOS) {
         this.aStarGraphic.lineStyle(3.5, 0xff2222, 0.95);
-        this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, player.x, player.y);
+        this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, targetPos.x, targetPos.y);
         this.aStarGraphic.fillStyle(0xff2222, 0.7);
-        this.aStarGraphic.fillCircle(player.x, player.y, 9);
-      } else if (this.currentChasePath && this.currentChasePath.length > 0) {
-        // Rota contornando paredes (A*) - vermelho vibrante de alta visibilidade
+        this.aStarGraphic.fillCircle(targetPos.x, targetPos.y, 9);
+      } else if (path && path.length > 0) {
         this.aStarGraphic.lineStyle(3.5, 0xff2222, 0.95);
 
-        const currentNode = this.currentChasePath[this.currentPathIndex];
+        const currentNode = path[pathIndex];
         if (currentNode) {
           this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, currentNode.x, currentNode.y);
         }
 
-        for (let i = this.currentPathIndex; i < this.currentChasePath.length - 1; i++) {
-          const n1 = this.currentChasePath[i];
-          const n2 = this.currentChasePath[i + 1];
+        for (let i = pathIndex; i < path.length - 1; i++) {
+          const n1 = path[i];
+          const n2 = path[i + 1];
           this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
         }
 
-        const lastNode = this.currentChasePath[this.currentChasePath.length - 1];
+        const lastNode = path[path.length - 1];
         if (lastNode) {
-          this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, player.x, player.y);
+          this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, targetPos.x, targetPos.y);
         }
 
-        // Desenhar os nós da rota como balizas destacadas
-        for (let i = 0; i < this.currentChasePath.length; i++) {
-          const node = this.currentChasePath[i];
-          if (i === this.currentPathIndex) {
-            // Destino imediato
+        for (let i = 0; i < path.length; i++) {
+          const node = path[i];
+          if (i === pathIndex) {
             this.aStarGraphic.fillStyle(0xffffff, 1);
             this.aStarGraphic.fillCircle(node.x, node.y, 6);
             this.aStarGraphic.lineStyle(2.5, 0xff2222, 1);
             this.aStarGraphic.strokeCircle(node.x, node.y, 10);
-          } else if (i > this.currentPathIndex) {
-            // Nós futuros
+          } else if (i > pathIndex) {
             this.aStarGraphic.fillStyle(0xff3333, 0.85);
             this.aStarGraphic.fillCircle(node.x, node.y, 5);
             this.aStarGraphic.lineStyle(1.5, 0xff6666, 0.6);
@@ -597,32 +370,29 @@ export class Killer {
           }
         }
       }
-    } else if (this.patrolPath && this.patrolPath.length > 0) {
-      // Rota de patrulha A* - vermelho vivo com boa opacidade e contraste
+    } else if (path && path.length > 0) {
       this.aStarGraphic.lineStyle(3, 0xff3333, 0.9);
-      const currentNode = this.patrolPath[this.patrolPathIndex];
+      const currentNode = path[pathIndex];
       if (currentNode) {
         this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, currentNode.x, currentNode.y);
       }
-      for (let i = this.patrolPathIndex; i < this.patrolPath.length - 1; i++) {
-        const n1 = this.patrolPath[i];
-        const n2 = this.patrolPath[i + 1];
+      for (let i = pathIndex; i < path.length - 1; i++) {
+        const n1 = path[i];
+        const n2 = path[i + 1];
         this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
       }
 
-      // Marcador final de ronda do gerador/cômodo
       this.aStarGraphic.fillStyle(0xff2222, 0.9);
-      this.aStarGraphic.fillCircle(this.patrolTarget.x, this.patrolTarget.y, 7);
+      this.aStarGraphic.fillCircle(targetPos.x, targetPos.y, 7);
       this.aStarGraphic.lineStyle(2, 0xffffff, 0.95);
-      this.aStarGraphic.strokeCircle(this.patrolTarget.x, this.patrolTarget.y, 11);
+      this.aStarGraphic.strokeCircle(targetPos.x, targetPos.y, 11);
     } else {
-      // Linha direta até o alvo de ronda quando visível
       this.aStarGraphic.lineStyle(2.5, 0xff3333, 0.8);
-      this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, this.patrolTarget.x, this.patrolTarget.y);
+      this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, targetPos.x, targetPos.y);
       this.aStarGraphic.fillStyle(0xff2222, 0.85);
-      this.aStarGraphic.fillCircle(this.patrolTarget.x, this.patrolTarget.y, 7);
+      this.aStarGraphic.fillCircle(targetPos.x, targetPos.y, 7);
       this.aStarGraphic.lineStyle(2, 0xffffff, 0.95);
-      this.aStarGraphic.strokeCircle(this.patrolTarget.x, this.patrolTarget.y, 11);
+      this.aStarGraphic.strokeCircle(targetPos.x, targetPos.y, 11);
     }
   }
 
@@ -638,5 +408,9 @@ export class Killer {
 
   get y(): number {
     return this.sprite.y;
+  }
+
+  get rotation(): number {
+    return this.sprite.rotation;
   }
 }

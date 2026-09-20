@@ -195,3 +195,126 @@ export function choosePatrolTarget(
   return validGens[0] || null;
 }
 
+/**
+ * Gerenciador de ciclo de ronda (patrol cycle) entre geradores e inspeção de ambientes.
+ */
+export class GeneratorPatrolManager {
+  public currentIndex = 0;
+  public inspectTimer = 0;
+  public isInspecting = false;
+  public currentDestination: PatrolTarget | null = null;
+  public totalInspectDuration = 2500; // 2.5s (entre 2s e 3s)
+
+  /**
+   * Filtra estritamente geradores incompletos e com coordenadas válidas.
+   * Exclui geradores já completados (100% ou isCompleted == true).
+   */
+  public filterActiveGenerators(
+    generators: Array<{ name: string; x: number; y: number; progress?: number; isCompleted?: boolean } | null | undefined>
+  ): PatrolTarget[] {
+    return (generators || [])
+      .filter((g): g is { name: string; x: number; y: number; progress?: number; isCompleted?: boolean } => {
+        if (!g) return false;
+        if (g.isCompleted) return false;
+        if (typeof g.progress === 'number' && g.progress >= 100) return false;
+        return (
+          typeof g.x === 'number' &&
+          typeof g.y === 'number' &&
+          !isNaN(g.x) &&
+          !isNaN(g.y) &&
+          isFinite(g.x) &&
+          isFinite(g.y)
+        );
+      })
+      .map((g) => ({ name: g.name, x: g.x, y: g.y, type: 'generator' }));
+  }
+
+  /**
+   * Obtém o próximo destino de patrulha na sequência cíclica:
+   * - Percorre a fila de geradores incompletos ciclicamente.
+   * - Se todos estiverem concluídos, patrulha as salas principais.
+   */
+  public getNextDestination(
+    generators: Array<{ name: string; x: number; y: number; progress?: number; isCompleted?: boolean } | null | undefined>,
+    majorRooms: PatrolTarget[] = MAJOR_FACILITY_ROOMS
+  ): PatrolTarget | null {
+    const activeGens = this.filterActiveGenerators(generators);
+    this.isInspecting = false;
+    this.inspectTimer = 0;
+
+    if (activeGens.length > 0) {
+      this.currentIndex = this.currentIndex % activeGens.length;
+      const target = activeGens[this.currentIndex];
+      this.currentIndex = (this.currentIndex + 1) % activeGens.length;
+      this.currentDestination = target;
+      return target;
+    }
+
+    // Se todos os geradores foram concluídos, ronda pelas salas principais
+    const validRooms = (majorRooms || []).filter((r) => r && typeof r.x === 'number' && typeof r.y === 'number');
+    if (validRooms.length > 0) {
+      this.currentIndex = this.currentIndex % validRooms.length;
+      const target = validRooms[this.currentIndex];
+      this.currentIndex = (this.currentIndex + 1) % validRooms.length;
+      this.currentDestination = target;
+      return target;
+    }
+
+    this.currentDestination = null;
+    return null;
+  }
+
+  /**
+   * Verifica se o Killer alcançou a distância segura do alvo (evita empurrar a máquina sólida).
+   * @param distance Distância euclidiana atual em pixels.
+   * @param safeRadius Raio de segurança em pixels (padrão: 110px).
+   */
+  public hasReachedSafeDistance(distance: number, safeRadius: number = 110): boolean {
+    return distance <= safeRadius;
+  }
+
+  /**
+   * Inicia o estado de inspeção no gerador.
+   * @param durationMs Duração da pausa de inspeção (padrão: 2500ms).
+   */
+  public startInspection(durationMs: number = 2500): void {
+    this.isInspecting = true;
+    this.inspectTimer = durationMs;
+    this.totalInspectDuration = durationMs;
+  }
+
+  /**
+   * Atualiza o cronômetro de inspeção e retorna o offset angular para olhar ao redor.
+   * @param delta Delta time em milissegundos.
+   * @returns isComplete: boolean indicando se a inspeção terminou, lookOffset: desvio angular em radianos.
+   */
+  public tickInspection(delta: number): { isComplete: boolean; lookOffset: number } {
+    if (!this.isInspecting) {
+      return { isComplete: false, lookOffset: 0 };
+    }
+
+    this.inspectTimer -= delta;
+
+    // Simula olhar em volta varrendo angularmente (+/- 1.1 radianos)
+    const elapsed = this.totalInspectDuration - this.inspectTimer;
+    const lookOffset = Math.sin(elapsed * 0.0032) * 1.1;
+
+    if (this.inspectTimer <= 0) {
+      this.isInspecting = false;
+      this.inspectTimer = 0;
+      return { isComplete: true, lookOffset: 0 };
+    }
+
+    return { isComplete: false, lookOffset };
+  }
+
+  /**
+   * Interrompe imediatamente a inspeção (ex: perseguição iniciada ou alerta de ruído).
+   */
+  public interruptInspection(): void {
+    this.isInspecting = false;
+    this.inspectTimer = 0;
+  }
+}
+
+
