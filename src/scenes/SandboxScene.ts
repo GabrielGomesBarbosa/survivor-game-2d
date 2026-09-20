@@ -65,7 +65,19 @@ export class SandboxScene extends Phaser.Scene {
         this.physics.world.drawDebug = show;
         if (!show && this.physics.world.debugGraphic) this.physics.world.debugGraphic.clear();
       },
-      onCameraZoomChanged: (zoom) => this.cameras.main.setZoom(zoom),
+      onCameraZoomChanged: (zoom) => {
+        this.cameras.main.setZoom(zoom);
+        this.updateUiZoomScale(zoom);
+      },
+      onFreeCamToggled: (enabled) => {
+        if (enabled) {
+          this.cameras.main.stopFollow();
+          this.telemetryHud.showNotification('📷 Modo Câmara Livre ativo: arraste o mapa com o rato!', false);
+        } else {
+          this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
+          this.telemetryHud.showNotification('🎯 Câmara centrada no Survivor!', false);
+        }
+      },
       onTestSkillCheck: () => this.skillCheck.startSkillCheck((res) => this.onSkillCheckResult(res)),
       onCompleteAllGenerators: () => {
         this.generators.forEach((g) => g.complete());
@@ -80,7 +92,11 @@ export class SandboxScene extends Phaser.Scene {
         this.player.updateHitbox(s.hitboxRadius, s.playerScale);
         this.killer.updateHitbox(s.hitboxRadius, s.playerScale);
         this.cameras.main.setZoom(s.cameraZoom);
+        this.updateUiZoomScale(s.cameraZoom);
         this.physics.world.drawDebug = s.showPhysicsDebug;
+        if (!s.freeCam) {
+          this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
+        }
       }
     });
 
@@ -98,8 +114,8 @@ export class SandboxScene extends Phaser.Scene {
     });
 
     // 4. Entities & Systems
-    this.player = new Player(this, 1280, 960, this.debugPanel.settings);
-    this.killer = new Killer(this, 1280, 224, this.debugPanel.settings, this.easystar, this.mapData.navGrid, this.mapData.walls, this.mapData.obstacles);
+    this.player = new Player(this, 1920, 1408, this.debugPanel.settings);
+    this.killer = new Killer(this, 1920, 544, this.debugPanel.settings, this.easystar, this.mapData.navGrid, this.mapData.walls, this.mapData.obstacles);
     this.generators = GENERATOR_DEFS.map((def) => new Generator(this, def, this.mapData.obstacles));
     this.skillCheck = new SkillCheckSystem(this);
     this.repairPrompt = new RepairPromptUI(this);
@@ -121,8 +137,35 @@ export class SandboxScene extends Phaser.Scene {
     this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     this.physics.world.drawDebug = this.debugPanel.settings.showPhysicsDebug;
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    this.cameras.main.startFollow(this.player.sprite, true, 0.08, 0.08);
+    if (this.debugPanel.settings.freeCam) {
+      this.cameras.main.stopFollow();
+    } else {
+      this.cameras.main.startFollow(this.player.sprite, true, 0.08, 0.08);
+    }
     this.cameras.main.setZoom(this.debugPanel.settings.cameraZoom);
+    this.updateUiZoomScale(this.debugPanel.settings.cameraZoom);
+
+    // 6.1 Navegação de Câmara Livre via Drag do Mouse (Pan)
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (this.debugPanel.settings.freeCam && pointer.isDown) {
+        const zoom = this.cameras.main.zoom;
+        const dx = (pointer.x - pointer.prevPosition.x) / zoom;
+        const dy = (pointer.y - pointer.prevPosition.y) / zoom;
+        this.cameras.main.scrollX -= dx;
+        this.cameras.main.scrollY -= dy;
+      }
+    });
+
+    this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gameObjects: any, _deltaX: number, deltaY: number) => {
+      if (this.debugPanel.settings.freeCam) {
+        const step = deltaY > 0 ? -0.05 : 0.05;
+        const newZoom = Phaser.Math.Clamp(this.cameras.main.zoom + step, 0.3, 1.5);
+        this.cameras.main.setZoom(newZoom);
+        this.debugPanel.settings.cameraZoom = Number(newZoom.toFixed(2));
+        this.debugPanel.saveSettingsToStorage();
+        this.updateUiZoomScale(newZoom);
+      }
+    });
 
     // 7. Inputs
     if (this.input.keyboard) this.keyE = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
@@ -251,4 +294,18 @@ export class SandboxScene extends Phaser.Scene {
     const completedCount = this.generators.filter((g) => g.isCompleted).length;
     this.telemetryHud.update(fps, this.killer.state, killerDistStr, completedCount, this.generators.length);
   }
+
+  /**
+   * Propaga o novo nível de zoom para elementos de UI flutuantes e prompts,
+   * assegurando tamanho aparente legível e estável na tela.
+   */
+  private updateUiZoomScale(zoom: number): void {
+    if (this.generators) {
+      this.generators.forEach((g) => g.updateZoomScale(zoom));
+    }
+    if (this.repairPrompt) {
+      this.repairPrompt.updateZoomScale(zoom);
+    }
+  }
 }
+

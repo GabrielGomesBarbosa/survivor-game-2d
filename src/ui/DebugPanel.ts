@@ -13,6 +13,7 @@ export interface DebugPanelCallbacks {
   onAnimFrameRateChanged?: (animKey: 'walk' | 'run', fps: number) => void;
   onPhysicsDebugToggled?: (show: boolean) => void;
   onCameraZoomChanged?: (zoom: number) => void;
+  onFreeCamToggled?: (enabled: boolean) => void;
   onTestSkillCheck?: () => void;
   onCompleteAllGenerators?: () => void;
   onResetAllGenerators?: () => void;
@@ -128,6 +129,16 @@ export class DebugPanel {
           this.callbacks.onCameraZoomChanged?.(this.settings.cameraZoom);
         }),
       'Nível de aproximação/afastamento da câmera virtual centrada no sobrevivente.'
+    );
+    this.attachTooltip(
+      displayFolder
+        .add(this.settings, 'freeCam')
+        .name('Câmara Livre (Pan)')
+        .onChange((val: boolean) => {
+          this.settings.freeCam = Boolean(val);
+          this.callbacks.onFreeCamToggled?.(this.settings.freeCam);
+        }),
+      'Desativa o seguimento automático do Player e permite arrastar o mapa livremente com o ponteiro do mouse.'
     );
     this.attachTooltip(
       displayFolder
@@ -437,6 +448,7 @@ export class DebugPanel {
     Object.assign(this.settings, DEFAULT_DEBUG_SETTINGS);
     this.saveSettingsToStorage();
     this.gui.controllersRecursive().forEach((c) => c.updateDisplay());
+    this.callbacks.onFreeCamToggled?.(this.settings.freeCam);
     this.callbacks.onResetDefaults?.();
   }
 

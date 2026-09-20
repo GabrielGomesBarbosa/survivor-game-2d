@@ -353,9 +353,9 @@ describe('Pathfinding Clearance & Raycast Smoothing (String Pulling)', () => {
 
 describe('Grid Telemetry & Tile Mapping (Math.floor / 64)', () => {
   it('correctly maps origin and initial player spawn to grid tile coordinates', () => {
-    // Spawn padrão do Player: x = 1280, y = 960 -> 1280/64 = 20, 960/64 = 15
-    expect(calculateCurrentTile(1280, 960)).toEqual([20, 15]);
-    expect(formatCurrentTile(1280, 960)).toBe('[20, 15]');
+    // Spawn padrão do Player: x = 1920, y = 1408 -> 1920/64 = 30, 1408/64 = 22
+    expect(calculateCurrentTile(1920, 1408)).toEqual([30, 22]);
+    expect(formatCurrentTile(1920, 1408)).toBe('[30, 22]');
 
     // Origem do mapa (canto superior esquerdo)
     expect(calculateCurrentTile(0, 0)).toEqual([0, 0]);
@@ -371,20 +371,20 @@ describe('Grid Telemetry & Tile Mapping (Math.floor / 64)', () => {
     expect(calculateCurrentTile(64.0, 64.0)).toEqual([1, 1]);
     expect(formatCurrentTile(64.0, 64.0)).toBe('[1, 1]');
 
-    // Canto inferior direito do mundo 2560x1920 (cols 0..39, rows 0..29)
-    expect(calculateCurrentTile(2559.9, 1919.9)).toEqual([39, 29]);
-    expect(formatCurrentTile(2559.9, 1919.9)).toBe('[39, 29]');
+    // Canto inferior direito do mundo 3840x2880 (cols 0..59, rows 0..44)
+    expect(calculateCurrentTile(3839.9, 2879.9)).toEqual([59, 44]);
+    expect(formatCurrentTile(3839.9, 2879.9)).toBe('[59, 44]');
   });
 
   it('accurately reports tile indices for key generator coordinates', () => {
-    // Gerador A (Usina): x = 2240, y = 960 -> [35, 15]
-    expect(formatCurrentTile(2240, 960)).toBe('[35, 15]');
+    // Gerador A (Ala Nordeste): x = 3072, y = 512 -> [48, 8]
+    expect(formatCurrentTile(3072, 512)).toBe('[48, 8]');
 
-    // Gerador B (Enfermaria): x = 320, y = 960 -> [5, 15]
-    expect(formatCurrentTile(320, 960)).toBe('[5, 15]');
+    // Gerador B (Ala Sudoeste): x = 768, y = 2304 -> [12, 36]
+    expect(formatCurrentTile(768, 2304)).toBe('[12, 36]');
 
-    // Gerador C (Manutenção): x = 1280, y = 1664 -> [20, 26]
-    expect(formatCurrentTile(1280, 1664)).toBe('[20, 26]');
+    // Gerador C (Ala Sudeste): x = 3072, y = 2304 -> [48, 36]
+    expect(formatCurrentTile(3072, 2304)).toBe('[48, 36]');
   });
 });
 

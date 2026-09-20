@@ -3,18 +3,18 @@
  * @description Constantes de configuração global, limites de mundo, malha lógica e padrões do painel de debug.
  */
 
-export const WORLD_WIDTH = 2560;
-export const WORLD_HEIGHT = 1920;
+export const WORLD_WIDTH = 3840;
+export const WORLD_HEIGHT = 2880;
 export const TILE_SIZE = 64;
-export const COLS = 40;
-export const ROWS = 30;
+export const COLS = 60;
+export const ROWS = 45;
 
 export const STORAGE_KEY = 'horror_topdown_debug_settings';
 
 export const GENERATOR_DEFS = [
-  { id: 'gen-1', name: 'Gerador A', roomName: 'Ala Leste (Usina)', x: 2240, y: 960 },
-  { id: 'gen-2', name: 'Gerador B', roomName: 'Ala Oeste (Enfermaria)', x: 320, y: 960 },
-  { id: 'gen-3', name: 'Gerador C', roomName: 'Ala Sul (Manutenção)', x: 1280, y: 1664 }
+  { id: 'gen-1', name: 'Gerador A', roomName: 'Ala Nordeste (Laboratório)', x: 3072, y: 512 },
+  { id: 'gen-2', name: 'Gerador B', roomName: 'Ala Sudoeste (Enfermaria)', x: 768, y: 2304 },
+  { id: 'gen-3', name: 'Gerador C', roomName: 'Ala Sudeste (Sala de Máquinas)', x: 3072, y: 2304 }
 ];
 
 /**
@@ -31,6 +31,7 @@ export interface DebugSettings {
   walkAnimFrameRate: number;
   runAnimFrameRate: number;
   cameraZoom: number;
+  freeCam: boolean;
   // Killer Settings
   killerSpeed: number;
   detectionRadius: number;
@@ -58,6 +59,7 @@ export const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   walkAnimFrameRate: 8,
   runAnimFrameRate: 12,
   cameraZoom: 1.0,
+  freeCam: false,
   killerSpeed: 170,
   detectionRadius: 280,
   inspectionTime: 2.5,
@@ -95,9 +97,9 @@ export const DEFAULT_MONITOR_STATE: MonitorState = {
   rotationDeg: '0°',
   playerScale: '0.25x',
   hitboxPixels: '133px',
-  playerX: '1280',
-  playerY: '960',
-  currentTile: '[20, 15]',
+  playerX: '1920',
+  playerY: '1408',
+  currentTile: '[30, 22]',
   worldSize: `${WORLD_WIDTH} x ${WORLD_HEIGHT} px (${COLS} x ${ROWS} tiles)`,
   killerState: 'PATROL',
   killerDist: '0px',

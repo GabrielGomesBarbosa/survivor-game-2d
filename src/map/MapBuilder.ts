@@ -59,13 +59,13 @@ export class MapBuilder {
     const walls = scene.physics.add.staticGroup();
     const obstacles = scene.physics.add.staticGroup();
 
-    // 3. Montar malha lógica da planta baixa (40 colunas x 30 linhas)
+    // 3. Montar malha lógica da planta baixa (60 colunas x 45 linhas)
     const grid: string[][] = [];
     for (let r = 0; r < ROWS; r++) {
       grid[r] = new Array(COLS).fill('.');
     }
 
-    // 3.1 Perímetro externo da instalação
+    // 3.1 Perímetro externo contínuo da instalação (Bordas sólidas)
     for (let c = 0; c < COLS; c++) {
       grid[0][c] = '#';
       grid[ROWS - 1][c] = '#';
@@ -75,91 +75,70 @@ export class MapBuilder {
       grid[r][COLS - 1] = '#';
     }
 
-    // 3.2 Bloco Central (Recepção - Cols 13..26, Rows 9..20)
-    for (let c = 13; c <= 26; c++) {
-      if (c < 18 || c > 21) {
-        grid[9][c] = '#';
-        grid[20][c] = '#';
-      }
-    }
-    for (let r = 9; r <= 20; r++) {
-      if (r < 14 || r > 16) {
-        grid[r][13] = '#';
-        grid[r][26] = '#';
+    // 3.2 Arquitetura Modular dos Setores e Alas (Grid 3x3 com Corredores e Anel Perimetral)
+    // Bandas de colunas: Oeste (4..19), Centro (23..36), Leste (40..55)
+    // Bandas de linhas: Norte (4..12), Centro (16..28), Sul (32..40)
+    // Todas as passagens e portas possuem largura de 3 a 4 ladrilhos (192px a 256px >= 128px)
+    // Corredores internos e anel perimetral de fuga possuem largura uniforme de 3 blocos (192px)
+    const colBands = [
+      { name: 'Oeste', min: 4, max: 19, doorMin: 10, doorMax: 13 },
+      { name: 'Centro', min: 23, max: 36, doorMin: 28, doorMax: 31 },
+      { name: 'Leste', min: 40, max: 55, doorMin: 46, doorMax: 49 }
+    ];
+
+    const rowBands = [
+      { name: 'Norte', min: 4, max: 12, doorMin: 7, doorMax: 9 },
+      { name: 'Centro', min: 16, max: 28, doorMin: 21, doorMax: 23 },
+      { name: 'Sul', min: 32, max: 40, doorMin: 35, doorMax: 37 }
+    ];
+
+    for (const rBand of rowBands) {
+      for (const cBand of colBands) {
+        // Parede Norte da sala (com porta cardeal centralizada)
+        for (let c = cBand.min; c <= cBand.max; c++) {
+          if (c < cBand.doorMin || c > cBand.doorMax) {
+            grid[rBand.min][c] = '#';
+          }
+        }
+        // Parede Sul da sala (com porta cardeal centralizada)
+        for (let c = cBand.min; c <= cBand.max; c++) {
+          if (c < cBand.doorMin || c > cBand.doorMax) {
+            grid[rBand.max][c] = '#';
+          }
+        }
+        // Parede Oeste da sala (com porta cardeal centralizada)
+        for (let r = rBand.min; r <= rBand.max; r++) {
+          if (r < rBand.doorMin || r > rBand.doorMax) {
+            grid[r][cBand.min] = '#';
+          }
+        }
+        // Parede Leste da sala (com porta cardeal centralizada)
+        for (let r = rBand.min; r <= rBand.max; r++) {
+          if (r < rBand.doorMin || r > rBand.doorMax) {
+            grid[r][cBand.max] = '#';
+          }
+        }
       }
     }
 
-    // 3.3 Ala Oeste - Enfermaria & Gerador B (Cols 1..9, Rows 9..20)
-    for (let r = 9; r <= 20; r++) {
-      if ((r >= 9 && r <= 10) || (r >= 14 && r <= 15) || (r >= 19 && r <= 20)) {
-        grid[r][9] = '#';
-      }
-    }
-    for (let c = 1; c <= 9; c++) {
-      if (c < 4 || c > 6) {
-        grid[9][c] = '#';
-        grid[20][c] = '#';
-      }
-    }
-    for (let r = 14; r <= 15; r++) {
-      for (let c = 4; c <= 5; c++) {
+    // 3.3 Alocação dos Geradores Provisórios (2x2 tiles)
+    // Gerador A: Ala Nordeste (Laboratório) - centro (3072, 512)
+    for (let r = 7; r <= 8; r++) {
+      for (let c = 47; c <= 48; c++) {
         grid[r][c] = 'G';
       }
     }
 
-    // 3.4 Ala Leste - Usina & Gerador A (Cols 30..38, Rows 9..20)
-    for (let r = 9; r <= 20; r++) {
-      if ((r >= 9 && r <= 10) || (r >= 14 && r <= 15) || (r >= 19 && r <= 20)) {
-        grid[r][30] = '#';
-      }
-    }
-    for (let c = 30; c <= 38; c++) {
-      if (c < 33 || c > 35) {
-        grid[9][c] = '#';
-        grid[20][c] = '#';
-      }
-    }
-    for (let r = 14; r <= 15; r++) {
-      for (let c = 34; c <= 35; c++) {
+    // Gerador B: Ala Sudoeste (Enfermaria) - centro (768, 2304)
+    for (let r = 35; r <= 36; r++) {
+      for (let c = 11; c <= 12; c++) {
         grid[r][c] = 'G';
       }
     }
 
-    // 3.5 Ala Norte - Contenção (Spawn do Killer: Cols 13..26, Rows 1..5)
-    for (let r = 1; r <= 5; r++) {
-      grid[r][13] = '#';
-      grid[r][26] = '#';
-    }
-    for (let c = 13; c <= 26; c++) {
-      if (c < 18 || c > 21) {
-        grid[5][c] = '#';
-      }
-    }
-    for (let c = 1; c <= 9; c++) {
-      if (c < 4 || c > 6) grid[5][c] = '#';
-    }
-    for (let c = 30; c <= 38; c++) {
-      if (c < 33 || c > 35) grid[5][c] = '#';
-    }
-
-    // 3.6 Ala Sul - Manutenção & Depósito / Gerador C (Cols 13..26, Rows 24..28)
-    for (let r = 24; r <= 28; r++) {
-      grid[r][13] = '#';
-      grid[r][26] = '#';
-    }
-    for (let c = 13; c <= 26; c++) {
-      if (c < 18 || c > 21) {
-        grid[24][c] = '#';
-      }
-    }
-    for (let c = 1; c <= 9; c++) {
-      if (c < 4 || c > 6) grid[24][c] = '#';
-    }
-    for (let c = 30; c <= 38; c++) {
-      if (c < 33 || c > 35) grid[24][c] = '#';
-    }
-    for (let r = 25; r <= 26; r++) {
-      for (let c = 19; c <= 20; c++) {
+    // Gerador C: Ala Sudeste (Sala de Máquinas) - centro (3072, 2304)
+    for (let r = 35; r <= 36; r++) {
+      for (let c = 47; c <= 48; c++) {
         grid[r][c] = 'G';
       }
     }
@@ -277,18 +256,18 @@ export class MapBuilder {
    * Instancia a sinalização de solo, zonas de advertência e faixas táticas.
    */
   private static createFacilitySignage(scene: Phaser.Scene): void {
-    // Linha amarela de advertência do Bloco de Contenção (Spawn Killer)
-    const warningLine = scene.add.rectangle(1280, 368, 256, 12, 0xca8a04, 0.85);
+    // Linha amarela de advertência do Bloco de Contenção (Spawn Killer em Ala Norte)
+    const warningLine = scene.add.rectangle(1920, 752, 256, 12, 0xca8a04, 0.85);
     warningLine.setStrokeStyle(1, 0x18181b);
     warningLine.setDepth(0.5);
 
-    // Tapete demarcatório da Recepção Central (8x6 tiles alinhados ao grid: 512x384px)
-    const receptionCarpet = scene.add.rectangle(1280, 960, 512, 384, 0x0f172a, 0.6);
+    // Tapete demarcatório da Recepção Central (8x6 tiles alinhados ao grid: 512x384px centrado em 1920, 1408)
+    const receptionCarpet = scene.add.rectangle(1920, 1408, 512, 384, 0x0f172a, 0.6);
     receptionCarpet.setStrokeStyle(1.5, 0x334155, 0.5);
     receptionCarpet.setDepth(0.3);
 
     // Marca central de spawn do jogador
-    const spawnRing = scene.add.circle(1280, 960, 36);
+    const spawnRing = scene.add.circle(1920, 1408, 36);
     spawnRing.setStrokeStyle(2, 0x38bdf8, 0.4);
     spawnRing.setDepth(0.4);
   }

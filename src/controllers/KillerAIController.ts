@@ -53,7 +53,7 @@ export class KillerAIController implements IKillerController {
   constructor(pawn: IKillerPawn) {
     this.pawn = pawn;
     this.patrolManager = new GeneratorPatrolManager();
-    this.patrolTarget = new Phaser.Math.Vector2(1280, 480);
+    this.patrolTarget = new Phaser.Math.Vector2(pawn.x, pawn.y);
   }
 
   public getState(): string {

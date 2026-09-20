@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   addGeneratorProgress,
   applyExplosionPenalty,
+  calculateZoomCompensationScale,
   GENERATOR_HITBOX_WIDTH,
   GENERATOR_HITBOX_HEIGHT,
   GENERATOR_HITBOX_OFFSET_Y,
@@ -154,4 +155,28 @@ describe('Generator 4-Cardinal Interaction Range Verification', () => {
     });
   });
 });
+
+describe('UI Zoom Compensation Scale (Prompt Legibility on Far Zoom)', () => {
+  it('returns scale 1.0 under standard camera zoom (1.0x)', () => {
+    expect(calculateZoomCompensationScale(1.0)).toBe(1.0);
+  });
+
+  it('inversely scales up prompts when camera zooms out to keep apparent screen size constant', () => {
+    // Zoom afastado 0.4x -> Escala compensada 2.5x (2.5 * 0.4 = 1.0 na tela)
+    expect(calculateZoomCompensationScale(0.4)).toBeCloseTo(2.5);
+
+    // Zoom afastado 0.5x -> Escala compensada 2.0x
+    expect(calculateZoomCompensationScale(0.5)).toBe(2.0);
+
+    // Zoom aproximado 1.5x -> Escala compensada ~0.6667x
+    expect(calculateZoomCompensationScale(1.5)).toBeCloseTo(1 / 1.5);
+  });
+
+  it('safely clamps to minZoom to avoid division by zero or negative scale', () => {
+    expect(calculateZoomCompensationScale(0)).toBe(10); // 1 / 0.1
+    expect(calculateZoomCompensationScale(-0.5)).toBe(10);
+    expect(calculateZoomCompensationScale(0.05, 0.05)).toBe(20);
+  });
+});
+
 

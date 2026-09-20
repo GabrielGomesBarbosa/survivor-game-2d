@@ -449,8 +449,8 @@ export interface CircleClampResult {
  * @param radius Raio da hitbox circular.
  * @param navGrid Matriz de navegação onde 1 = parede/sólido, 0 = livre.
  * @param tileSize Tamanho do bloco em pixels (padrão: 64).
- * @param worldWidth Largura total do mapa (padrão: 2560).
- * @param worldHeight Altura total do mapa (padrão: 1920).
+ * @param worldWidth Largura total do mapa (padrão: 3840).
+ * @param worldHeight Altura total do mapa (padrão: 2880).
  */
 export function clampCircleAgainstNavGrid(
   x: number,
@@ -458,18 +458,21 @@ export function clampCircleAgainstNavGrid(
   radius: number,
   navGrid: number[][],
   tileSize: number = 64,
-  worldWidth: number = 2560,
-  worldHeight: number = 1920
+  worldWidth: number = 3840,
+  worldHeight: number = 2880
 ): CircleClampResult {
   let curX = x;
   let curY = y;
   let clamped = false;
 
+  const effectiveWorldWidth = (navGrid && navGrid[0]?.length) ? navGrid[0].length * tileSize : worldWidth;
+  const effectiveWorldHeight = (navGrid && navGrid.length) ? navGrid.length * tileSize : worldHeight;
+
   // 1. Clamping estrito contra o perímetro externo do mundo
   const minWorldX = tileSize + radius;
-  const maxWorldX = worldWidth - tileSize - radius;
+  const maxWorldX = effectiveWorldWidth - tileSize - radius;
   const minWorldY = tileSize + radius;
-  const maxWorldY = worldHeight - tileSize - radius;
+  const maxWorldY = effectiveWorldHeight - tileSize - radius;
 
   if (curX < minWorldX) {
     curX = minWorldX;
@@ -784,11 +787,13 @@ export interface PatrolTarget {
  * Centros das salas e cômodos principais da instalação (sem nós vazios de corredores).
  */
 export const MAJOR_FACILITY_ROOMS: PatrolTarget[] = [
-  { name: 'Recepção Central', x: 1280, y: 960, type: 'room' },
-  { name: 'Ala de Contenção (Norte)', x: 1280, y: 224, type: 'room' },
-  { name: 'Ala Leste (Usina)', x: 2240, y: 960, type: 'room' },
-  { name: 'Ala Oeste (Enfermaria)', x: 320, y: 960, type: 'room' },
-  { name: 'Ala Sul (Manutenção)', x: 1280, y: 1680, type: 'room' }
+  { name: 'Recepção Central', x: 1920, y: 1408, type: 'room' },
+  { name: 'Ala Norte (Contenção)', x: 1920, y: 544, type: 'room' },
+  { name: 'Ala Nordeste (Laboratório)', x: 3072, y: 512, type: 'room' },
+  { name: 'Ala Noroeste (Depósito)', x: 768, y: 512, type: 'room' },
+  { name: 'Ala Sudoeste (Enfermaria)', x: 768, y: 2304, type: 'room' },
+  { name: 'Ala Sudeste (Sala de Máquinas)', x: 3072, y: 2304, type: 'room' },
+  { name: 'Ala Sul (Manutenção)', x: 1920, y: 2304, type: 'room' }
 ];
 
 /**
@@ -1072,6 +1077,18 @@ export function formatCurrentTile(x: number, y: number, tileSize: number = 64): 
   const [col, row] = calculateCurrentTile(x, y, tileSize);
   return `[${col}, ${row}]`;
 }
+
+/**
+ * Calcula o fator multiplicador de escala inverso para compensação de zoom da câmera,
+ * garantindo legibilidade nítida da UI e prompts flutuantes em qualquer nível de aproximação/afastamento.
+ * @param zoom Nível atual de zoom da câmera (ex: 0.4 a 1.5).
+ * @param minZoom Limite mínimo de segurança para evitar divisão por zero (padrão: 0.1).
+ * @returns Fator de escala compensado (1 / zoom).
+ */
+export function calculateZoomCompensationScale(zoom: number, minZoom: number = 0.1): number {
+  return 1 / Math.max(minZoom, zoom);
+}
+
 
 
 

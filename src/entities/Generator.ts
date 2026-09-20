@@ -10,6 +10,7 @@ import { SoundFX } from '../systems/SoundFX';
 import {
   addGeneratorProgress,
   applyExplosionPenalty,
+  calculateZoomCompensationScale,
   GENERATOR_HITBOX_WIDTH,
   GENERATOR_HITBOX_HEIGHT,
   GENERATOR_HITBOX_OFFSET_Y,
@@ -38,6 +39,7 @@ export class Generator {
   public readonly hitboxHeight = GENERATOR_HITBOX_HEIGHT;
 
   public container: Phaser.GameObjects.Container;
+  public promptContainer: Phaser.GameObjects.Container;
   public sprite: Phaser.GameObjects.Sprite;
   public progressBarFill: Phaser.GameObjects.Rectangle;
   public progressText: Phaser.GameObjects.Text;
@@ -92,8 +94,10 @@ export class Generator {
     this.sprite.setScale(0.095);
     this.sprite.setOrigin(0.5, 0.5);
 
-    // Mini indicador de status flutuante sobre o gerador
-    const labelText = scene.add.text(0, -78, `${def.name} • ${def.roomName}`, {
+    // Mini indicador de status flutuante sobre o gerador (agrupado em promptContainer para compensação de zoom)
+    this.promptContainer = scene.add.container(0, -64);
+
+    const labelText = scene.add.text(0, -14, `${def.name} • ${def.roomName}`, {
       fontSize: '11px',
       color: '#94a3b8',
       fontStyle: 'bold',
@@ -101,13 +105,13 @@ export class Generator {
       strokeThickness: 2
     }).setOrigin(0.5);
 
-    const barBg = scene.add.rectangle(0, -64, 68, 8, 0x0f172a);
+    const barBg = scene.add.rectangle(0, 0, 68, 8, 0x0f172a);
     barBg.setStrokeStyle(1, 0x334155);
 
-    this.progressBarFill = scene.add.rectangle(-33, -64, 0, 6, 0xf59e0b);
+    this.progressBarFill = scene.add.rectangle(-33, 0, 0, 6, 0xf59e0b);
     this.progressBarFill.setOrigin(0, 0.5);
 
-    this.progressText = scene.add.text(0, -52, '0%', {
+    this.progressText = scene.add.text(0, 12, '0%', {
       fontSize: '10px',
       color: '#e2e8f0',
       fontStyle: 'bold',
@@ -115,14 +119,27 @@ export class Generator {
       strokeThickness: 2
     }).setOrigin(0.5);
 
-    this.container.add([
-      shadow,
-      this.sprite,
+    this.promptContainer.add([
       labelText,
       barBg,
       this.progressBarFill,
       this.progressText
     ]);
+
+    this.container.add([
+      shadow,
+      this.sprite,
+      this.promptContainer
+    ]);
+  }
+
+  /**
+   * Ajusta a escala dos elementos flutuantes de texto e progresso para compensar o zoom da câmera.
+   * @param {number} zoom - Zoom atual da câmera do Phaser.
+   */
+  public updateZoomScale(zoom: number): void {
+    const scale = calculateZoomCompensationScale(zoom);
+    this.promptContainer.setScale(scale);
   }
 
   /**
