@@ -1,0 +1,25 @@
+{
+  "name": "horror-topdown",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "convert-assets": "node scripts/convert-assets.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "2D Top-Down Survival Horror game built with Phaser 3, Vite, and TypeScript",
+  "dependencies": {
+    "lil-gui": "^0.21.0",
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "sharp": "^0.35.4",
+    "typescript": "^5.8.2",
+    "vite": "^8.3.0"
+  }
+}

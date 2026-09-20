@@ -1,0 +1,22 @@
+{
+  "imageWidth": 2816,
+  "imageHeight": 1536,
+  "cols": 4,
+  "rows": 2,
+  "frameWidth": 704,
+  "frameHeight": 768,
+  "totalFrames": 8,
+  "walkFrames": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "runFrames": [
+    4,
+    5,
+    6,
+    7
+  ],
+  "updatedAt": "2026-09-20T02:13:35.569Z"
+}
