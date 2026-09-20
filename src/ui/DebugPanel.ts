@@ -192,8 +192,8 @@ export class DebugPanel {
     this.attachTooltip(
       killerFolder
         .add(this.settings, 'killerAiEnabled')
-        .name('Ativar IA'),
-      'Habilita ou congela completamente a inteligência artificial e locomoção do Assassino.'
+        .name('Killer Bot (IA Ativa)'),
+      'Liga ou desliga o bot do Assassino. Quando desmarcado, a IA congela e o estado passa para DESATIVADO.'
     );
     killerFolder.open();
 
@@ -205,11 +205,11 @@ export class DebugPanel {
     );
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'killerState').name('Estado Killer').listen().disable(),
-      'Estado da máquina FSM do Killer: PATROL (patrulha cautelosa) ou CHASE (perseguição ativa).'
+      'Estado da máquina FSM do Killer: PATROL (patrulha), CHASE (perseguição) ou DESATIVADO (robô desligado).'
     );
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'killerDist').name('Dist. Killer').listen().disable(),
-      'Distância linear euclidiana direta entre o Player e o Killer em pixels.'
+      'Distância real de superfície (borda a borda) entre as hitboxes do Player e do Killer (0px no contato).'
     );
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'currentSpeed').name('Vel. Atual').listen().disable(),

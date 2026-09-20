@@ -12,6 +12,7 @@ import { SoundFX } from '../systems/SoundFX';
 import { TelemetryHUD } from '../ui/TelemetryHUD';
 import { RepairPromptUI } from '../ui/RepairPromptUI';
 import { DebugPanel } from '../ui/DebugPanel';
+import { calculateEdgeToEdgeDistance } from '../utils/gameLogic';
 
 /**
  * @class SandboxScene
@@ -227,8 +228,11 @@ export class SandboxScene extends Phaser.Scene {
 
   private updateTelemetry(): void {
     const fps = Math.round(this.game.loop.actualFps);
-    const distToKiller = Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y);
-    const killerDistStr = `${Math.round(distToKiller)}px`;
+    const centerDist = Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y);
+    const playerRadius = this.debugPanel.settings.hitboxRadius * this.debugPanel.settings.playerScale;
+    const killerRadius = playerRadius * 1.28;
+    const effectiveDist = calculateEdgeToEdgeDistance(centerDist, playerRadius, killerRadius);
+    const killerDistStr = `${Math.round(effectiveDist)}px`;
 
     const mon = this.debugPanel.monitorState;
     mon.currentSpeed = this.player.currentSpeed;

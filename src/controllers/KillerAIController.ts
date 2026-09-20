@@ -9,10 +9,10 @@ import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
 import { Player } from '../entities/Player';
 import { Generator } from '../entities/Generator';
-import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint } from '../utils/gameLogic';
+import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState } from '../utils/gameLogic';
 import { IKillerController } from './KillerController';
 
-export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE';
+export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO';
 
 export interface IKillerPawn {
   x: number;
@@ -65,10 +65,15 @@ export class KillerAIController implements IKillerController {
    */
   public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
     if (!settings.killerAiEnabled) {
+      this.state = 'DESATIVADO';
       this.pawn.stopMovement();
       this.pawn.stopAnimation(0);
+      this.pawn.renderVisionGraphic(settings, { x: this.pawn.x, y: this.pawn.y }, false);
+      this.pawn.renderRouteGraphic(settings, [], 0, false, false, { x: this.pawn.x, y: this.pawn.y });
       return;
     }
+
+    this.state = evaluateKillerAiState(this.state, settings.killerAiEnabled) as AIState;
 
     const distToPlayer = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, player.x, player.y);
     const detectionRadius = settings.detectionRadius;
@@ -325,6 +330,7 @@ export class KillerAIController implements IKillerController {
    * Alerta imediato de ruído (falha de Skill Check em gerador).
    */
   public alertToNoise(x: number, y: number): void {
+    if (this.state === 'DESATIVADO') return;
     this.patrolManager.interruptInspection();
     this.state = 'PATROL';
     this.patrolTarget.set(x, y);

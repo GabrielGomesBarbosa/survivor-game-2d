@@ -129,8 +129,13 @@ export class TelemetryHUD {
 
     if (this.hudKillerState) {
       this.hudKillerState.textContent = killerState;
-      this.hudKillerState.className =
-        killerState === 'CHASE' ? 'hud-val state-chase' : 'hud-val state-patrol';
+      if (killerState === 'CHASE') {
+        this.hudKillerState.className = 'hud-val state-chase';
+      } else if (killerState === 'DESATIVADO' || killerState === 'OFFLINE') {
+        this.hudKillerState.className = 'hud-val state-disabled';
+      } else {
+        this.hudKillerState.className = 'hud-val state-patrol';
+      }
     }
 
     if (this.hudKillerDist) {

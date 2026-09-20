@@ -99,6 +99,9 @@ export class Killer implements IKillerPawn {
   }
 
   public get state(): string {
+    if (this.settings && !this.settings.killerAiEnabled) {
+      return 'DESATIVADO';
+    }
     return this.controller ? this.controller.getState() : 'PATROL';
   }
 

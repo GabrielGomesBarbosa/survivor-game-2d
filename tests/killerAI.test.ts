@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   GeneratorPatrolManager,
   MAJOR_FACILITY_ROOMS,
-  getGeneratorStandOffPoint
+  getGeneratorStandOffPoint,
+  calculateEdgeToEdgeDistance,
+  evaluateKillerAiState
 } from '../src/utils/gameLogic';
 
 describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', () => {
@@ -146,3 +148,62 @@ describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', ()
     expect(MAJOR_FACILITY_ROOMS.map((r) => r.name)).toContain(roomTarget?.name);
   });
 });
+
+describe('Player vs Killer Edge-to-Edge Distance Telemetry (Surface Separation)', () => {
+  const playerRadius = 66.25; // 53px * 1.25
+  const killerRadius = 84.8;  // playerRadius * 1.28
+  const sumRadii = playerRadius + killerRadius; // 151.05px
+
+  it('reports exactly 0px when player and killer are in physical contact (tangent surfaces)', () => {
+    const centerDist = sumRadii; // 151.05px
+    const edgeDist = calculateEdgeToEdgeDistance(centerDist, playerRadius, killerRadius);
+    expect(edgeDist).toBe(0);
+    expect(Math.round(edgeDist)).toBe(0);
+  });
+
+  it('strictly clamps to 0px during micro-overlaps or collision penetration (never negative)', () => {
+    // 5px de sobreposição (distância menor que a soma dos raios)
+    const centerDist = sumRadii - 5; // 146.05px
+    const edgeDist = calculateEdgeToEdgeDistance(centerDist, playerRadius, killerRadius);
+    expect(edgeDist).toBe(0);
+    expect(Math.round(edgeDist)).toBe(0);
+
+    // Entidades ocupando mesmo centro
+    const zeroCenter = calculateEdgeToEdgeDistance(0, playerRadius, killerRadius);
+    expect(zeroCenter).toBe(0);
+  });
+
+  it('accurately reports positive surface separation when entities are apart', () => {
+    // 300px centro a centro -> 300 - 151.05 = 148.95px
+    const centerDist = 300;
+    const edgeDist = calculateEdgeToEdgeDistance(centerDist, playerRadius, killerRadius);
+    expect(edgeDist).toBeCloseTo(148.95);
+    expect(Math.round(edgeDist)).toBe(149);
+
+    // 100px além da borda
+    const centerDist100 = sumRadii + 100;
+    const edgeDist100 = calculateEdgeToEdgeDistance(centerDist100, playerRadius, killerRadius);
+    expect(edgeDist100).toBeCloseTo(100);
+    expect(Math.round(edgeDist100)).toBe(100);
+  });
+});
+
+describe('Killer Bot (IA Ativa) - State Transition & Offline Mode', () => {
+  it('switches state to DESATIVADO when killerAiEnabled is false regardless of previous state', () => {
+    expect(evaluateKillerAiState('PATROL', false)).toBe('DESATIVADO');
+    expect(evaluateKillerAiState('CHASE', false)).toBe('DESATIVADO');
+    expect(evaluateKillerAiState('INSPECTING', false)).toBe('DESATIVADO');
+    expect(evaluateKillerAiState('DESATIVADO', false)).toBe('DESATIVADO');
+  });
+
+  it('resumes regular PATROL state when bot is re-enabled from DESATIVADO', () => {
+    expect(evaluateKillerAiState('DESATIVADO', true)).toBe('PATROL');
+  });
+
+  it('preserves active FSM states when bot remains enabled', () => {
+    expect(evaluateKillerAiState('PATROL', true)).toBe('PATROL');
+    expect(evaluateKillerAiState('CHASE', true)).toBe('CHASE');
+    expect(evaluateKillerAiState('INSPECTING', true)).toBe('INSPECTING');
+  });
+});
+

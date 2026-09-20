@@ -247,6 +247,44 @@ export function getGeneratorContactPosition(
 }
 
 /**
+ * Calcula a distância de superfície (borda a borda) entre duas entidades circulares (Player e Killer).
+ * Retorna 0 quando as entidades estão em contato físico ou sobrepostas.
+ * @param centerDist Distância euclidiana centro a centro em pixels.
+ * @param playerRadius Raio da hitbox física do Player em pixels.
+ * @param killerRadius Raio da hitbox física do Killer em pixels.
+ * @returns Distância efetiva de separação borda a borda em pixels (>= 0).
+ */
+export function calculateEdgeToEdgeDistance(
+  centerDist: number,
+  playerRadius: number,
+  killerRadius: number
+): number {
+  return Math.max(0, centerDist - (playerRadius + killerRadius));
+}
+
+/**
+ * Avalia o estado da FSM do Killer com base na ativação do bot (killerAiEnabled):
+ * - Se killerAiEnabled for false, retorna categoricamente 'DESATIVADO'.
+ * - Se reativado a partir de 'DESATIVADO', retorna 'PATROL'.
+ * - Caso contrário, preserva o estado ativo atual.
+ * @param currentState Estado atual ('PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO').
+ * @param killerAiEnabled Flag do controle de debug/configuração da IA.
+ * @returns Estado resultante da máquina FSM.
+ */
+export function evaluateKillerAiState(
+  currentState: string,
+  killerAiEnabled: boolean
+): string {
+  if (!killerAiEnabled) {
+    return 'DESATIVADO';
+  }
+  if (currentState === 'DESATIVADO') {
+    return 'PATROL';
+  }
+  return currentState;
+}
+
+/**
  * Pure anti-push velocity cancellation:
  * Eliminates approach velocity between Killer and Player along collision normal
  * without pushing the Player into solid walls.

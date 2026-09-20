@@ -278,8 +278,8 @@ export class MapBuilder {
     warningLine.setStrokeStyle(1, 0x18181b);
     warningLine.setDepth(0.5);
 
-    // Tapete demarcatório da Recepção Central
-    const receptionCarpet = scene.add.rectangle(1280, 960, 480, 380, 0x0f172a, 0.6);
+    // Tapete demarcatório da Recepção Central (8x6 tiles alinhados ao grid: 512x384px)
+    const receptionCarpet = scene.add.rectangle(1280, 960, 512, 384, 0x0f172a, 0.6);
     receptionCarpet.setStrokeStyle(1.5, 0x334155, 0.5);
     receptionCarpet.setDepth(0.3);
 
