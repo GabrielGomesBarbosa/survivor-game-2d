@@ -18,9 +18,11 @@ export class Killer implements IKillerPawn {
   public sprite: Phaser.Physics.Arcade.Sprite;
   public controller!: IKillerController;
 
-  // Trava de integridade contra penetração em paredes
+  // Trava de integridade contra penetração em paredes e imovabilidade estável
   public lastSafeX = 1280;
   public lastSafeY = 224;
+  public lastStableX = 1280;
+  public lastStableY = 224;
 
   // Configurações ativas de depuração
   private settings: DebugSettings;
@@ -59,6 +61,8 @@ export class Killer implements IKillerPawn {
     this.obstacles = obstacles;
     this.lastSafeX = x;
     this.lastSafeY = y;
+    this.lastStableX = x;
+    this.lastStableY = y;
 
     // Sprite físico do Killer (clone com tom avermelhado e escala 1.28x)
     this.sprite = scene.physics.add.sprite(x, y, 'survivor', 0);
@@ -70,8 +74,9 @@ export class Killer implements IKillerPawn {
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     body.setDamping(false);
     body.setDrag(0, 0);
-    body.pushable = false;
     body.setImmovable(true);
+    body.pushable = false;
+    body.mass = 100000;
 
     this.updateHitbox(settings.hitboxRadius, settings.playerScale);
 
@@ -112,8 +117,9 @@ export class Killer implements IKillerPawn {
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     if (body) {
       body.setCircle(radius, offsetX, offsetY);
-      body.pushable = false;
       body.setImmovable(true);
+      body.pushable = false;
+      body.mass = 100000;
     }
   }
 
@@ -122,6 +128,11 @@ export class Killer implements IKillerPawn {
    */
   public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
     this.settings = settings;
+    const body = this.sprite.body as Phaser.Physics.Arcade.Body;
+    if (body && Math.hypot(body.velocity.x, body.velocity.y) < 0.1) {
+      this.lastStableX = this.sprite.x;
+      this.lastStableY = this.sprite.y;
+    }
     if (this.controller) {
       this.controller.update(delta, player, generators, settings);
     }
@@ -182,7 +193,7 @@ export class Killer implements IKillerPawn {
     }
   }
 
-  public isWalkableTile(x: number, y: number, margin: number = 20): boolean {
+  public isWalkableTile(x: number, y: number, margin: number = 4): boolean {
     const points = [
       { x, y },
       { x: x - margin, y },
@@ -215,6 +226,13 @@ export class Killer implements IKillerPawn {
 
     const playerBody = player.sprite.body as Phaser.Physics.Arcade.Body;
     const killerBody = this.sprite.body as Phaser.Physics.Arcade.Body;
+
+    // Proteção estrita de imovabilidade: se o Killer estiver em repouso perante seu próprio comando,
+    // restaura sua posição estável sem sofrer nenhum deslocamento vetorial transmitido pelo Survivor
+    if (Math.hypot(killerBody.velocity.x, killerBody.velocity.y) < 0.1) {
+      this.sprite.setPosition(this.lastStableX, this.lastStableY);
+      killerBody.updateCenter();
+    }
 
     const playerRadius = settings.hitboxRadius * settings.playerScale;
     const killerRadius = playerRadius * 1.28;
@@ -254,7 +272,7 @@ export class Killer implements IKillerPawn {
 
   /**
    * Guarda pós-física anti-tunelamento para o Killer: se penetrar em uma célula sólida,
-   * restaura instantaneamente para a última posição segura conhecida com velocidade zero.
+   * restaura instantaneamente para a última posição segura conhecida.
    * @param {number[][]} navGrid - Matriz de navegação 0 (livre) e 1 (parede).
    */
   public enforceWallBounds(navGrid: number[][]): void {
@@ -266,7 +284,6 @@ export class Killer implements IKillerPawn {
 
     if (clampResult.clamped) {
       this.sprite.setPosition(clampResult.x, clampResult.y);
-      this.sprite.setVelocity(0, 0);
       (this.sprite.body as Phaser.Physics.Arcade.Body).updateCenter();
     }
     this.lastSafeX = this.sprite.x;

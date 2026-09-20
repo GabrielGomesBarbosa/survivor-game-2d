@@ -206,12 +206,13 @@ export class MapBuilder {
       }
     }
 
-    // 5. Configurar matriz de navegação A* (0 = transitável, 1 = sólido/gerador)
+    // 5. Configurar matriz de navegação e contenção (0 = transitável, 1 = parede arquitetônica)
+    // Os geradores têm colisão física gerenciada exclusivamente pelo grupo de obstáculos Arcade
     const navGrid: number[][] = [];
     for (let r = 0; r < ROWS; r++) {
       navGrid[r] = new Array(COLS);
       for (let c = 0; c < COLS; c++) {
-        navGrid[r][c] = (grid[r][c] === '#' || grid[r][c] === 'G') ? 1 : 0;
+        navGrid[r][c] = (grid[r][c] === '#') ? 1 : 0;
       }
     }
 

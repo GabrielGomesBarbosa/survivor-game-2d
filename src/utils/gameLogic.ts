@@ -102,23 +102,19 @@ export function evaluatePlayerMovementState(
     };
   }
 
-  // Se o movimento for frontal total contra uma parede/obstáculo bloqueado
+  // Avalia se o input é estritamente frontal contra superfícies bloqueadas
+  let isFullyBlockedFrontally = false;
   if (blocked && inputDir) {
-    const blockedX = (inputDir.x > 0 && Boolean(blocked.right)) || (inputDir.x < 0 && Boolean(blocked.left));
-    const blockedY = (inputDir.y > 0 && Boolean(blocked.down)) || (inputDir.y < 0 && Boolean(blocked.up));
-    const hasFreeX = inputDir.x !== 0 && !blockedX;
-    const hasFreeY = inputDir.y !== 0 && !blockedY;
+    const pushesIntoWallX = (inputDir.x > 0 && Boolean(blocked.right)) || (inputDir.x < 0 && Boolean(blocked.left));
+    const pushesIntoWallY = (inputDir.y > 0 && Boolean(blocked.down)) || (inputDir.y < 0 && Boolean(blocked.up));
+    const hasBlockedInput = (inputDir.x !== 0 && pushesIntoWallX) || (inputDir.y !== 0 && pushesIntoWallY);
+    const hasUnblockedInput = (inputDir.x !== 0 && !pushesIntoWallX) || (inputDir.y !== 0 && !pushesIntoWallY);
 
-    if (!hasFreeX && !hasFreeY) {
-      return {
-        animState: 'idle',
-        isMoving: false,
-        actualSpeed: 0
-      };
-    }
+    isFullyBlockedFrontally = hasBlockedInput && !hasUnblockedInput;
   }
 
-  if (effectiveSpeed < threshold) {
+  // A animação só deve entrar em 'idle' quando a velocidade efetiva for nula/baixa E a intenção for frontal contra a colisão
+  if (effectiveSpeed < threshold && isFullyBlockedFrontally) {
     return {
       animState: 'idle',
       isMoving: false,
@@ -161,6 +157,93 @@ export function addGeneratorProgress(
  */
 export function applyExplosionPenalty(current: number, penalty: number = 10): number {
   return Math.max(0, current - penalty);
+}
+
+export const GENERATOR_HITBOX_WIDTH = 50;
+export const GENERATOR_HITBOX_HEIGHT = 112;
+export const GENERATOR_HITBOX_OFFSET_Y = -4;
+export const GENERATOR_INTERACTION_RADIUS = 130;
+
+/**
+ * Retorna os limites (AABB) do colisor estático sólido do gerador.
+ * @param genX Coordenada X central do gerador.
+ * @param genY Coordenada Y central do gerador.
+ * @param width Largura do colisor (padrão 50px).
+ * @param height Altura do colisor (padrão 112px).
+ * @param offsetY Offset vertical do centro físico (padrão -4px).
+ */
+export function getGeneratorHitboxBounds(
+  genX: number,
+  genY: number,
+  width: number = GENERATOR_HITBOX_WIDTH,
+  height: number = GENERATOR_HITBOX_HEIGHT,
+  offsetY: number = GENERATOR_HITBOX_OFFSET_Y
+): {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+} {
+  const centerX = genX;
+  const centerY = genY + offsetY;
+  const halfW = width / 2;
+  const halfH = height / 2;
+  return {
+    left: centerX - halfW,
+    right: centerX + halfW,
+    top: centerY - halfH,
+    bottom: centerY + halfH,
+    centerX,
+    centerY,
+    width,
+    height
+  };
+}
+
+/**
+ * Verifica se uma posição (ex: centro do jogador) está dentro do raio de interação do gerador.
+ * @param playerPos Posição { x, y } do jogador.
+ * @param genPos Posição { x, y } do gerador.
+ * @param radius Raio de alcance da interação em pixels (padrão: 130px).
+ */
+export function isWithinGeneratorInteractionRange(
+  playerPos: { x: number; y: number },
+  genPos: { x: number; y: number },
+  radius: number = GENERATOR_INTERACTION_RADIUS
+): boolean {
+  const dist = Math.hypot(playerPos.x - genPos.x, playerPos.y - genPos.y);
+  return dist <= radius;
+}
+
+/**
+ * Calcula a posição do jogador ao encostar no colisor estático do gerador a partir de um lado cardeal.
+ * Útil para testes unitários de colisão e alcance de interação.
+ * @param genX Coordenada X central do gerador.
+ * @param genY Coordenada Y central do gerador.
+ * @param side Lado de aproximação ('north' | 'south' | 'east' | 'west').
+ * @param playerRadius Raio do colisor do jogador (padrão 66.25px).
+ */
+export function getGeneratorContactPosition(
+  genX: number,
+  genY: number,
+  side: 'north' | 'south' | 'east' | 'west',
+  playerRadius: number = 66.25
+): { x: number; y: number } {
+  const bounds = getGeneratorHitboxBounds(genX, genY);
+  switch (side) {
+    case 'north':
+      return { x: bounds.centerX, y: bounds.top - playerRadius };
+    case 'south':
+      return { x: bounds.centerX, y: bounds.bottom + playerRadius };
+    case 'east':
+      return { x: bounds.right + playerRadius, y: bounds.centerY };
+    case 'west':
+      return { x: bounds.left - playerRadius, y: bounds.centerY };
+  }
 }
 
 /**
@@ -373,8 +456,15 @@ export function clampCircleAgainstNavGrid(
   const rows = navGrid.length;
   const cols = navGrid[0]?.length ?? 0;
 
-  // 2. Iterações de resolução contra caixas AABB de cada ladrilho sólido (1)
-  for (let iter = 0; iter < 2; iter++) {
+  // Margem de histerese (epsilon) para evitar que corpos apenas tangenciando a parede
+  // disparem 'clamped = true' infinitamente em repouso.
+  const EPSILON = 0.5;
+  const effectiveRadius = radius - EPSILON;
+  const effectiveRadiusSq = effectiveRadius * effectiveRadius;
+
+  // 2. Resolução iterativa contra caixas AABB de cada ladrilho sólido (1)
+  for (let iter = 0; iter < 3; iter++) {
+    let maxIterPush = 0;
     const minCol = Math.max(0, Math.floor((curX - radius) / tileSize));
     const maxCol = Math.min(cols - 1, Math.floor((curX + radius) / tileSize));
     const minRow = Math.max(0, Math.floor((curY - radius) / tileSize));
@@ -395,13 +485,16 @@ export function clampCircleAgainstNavGrid(
           const diffY = curY - closestY;
           const distSq = diffX * diffX + diffY * diffY;
 
-          if (distSq < radius * radius) {
+          if (distSq < effectiveRadiusSq) {
             clamped = true;
             if (distSq > 0.0001) {
               const dist = Math.sqrt(distSq);
               const push = radius - dist;
-              curX += (diffX / dist) * push;
-              curY += (diffY / dist) * push;
+              const nx = diffX / dist;
+              const ny = diffY / dist;
+              curX += nx * push;
+              curY += ny * push;
+              maxIterPush = Math.max(maxIterPush, push);
             } else {
               const dLeft = curX - boxLeft;
               const dRight = boxRight - curX;
@@ -412,11 +505,13 @@ export function clampCircleAgainstNavGrid(
               else if (minD === dRight) curX = boxRight + radius;
               else if (minD === dTop) curY = boxTop - radius;
               else curY = boxBottom + radius;
+              maxIterPush = Math.max(maxIterPush, radius);
             }
           }
         }
       }
     }
+    if (maxIterPush < 0.05) break;
   }
 
   return { x: curX, y: curY, clamped };
@@ -424,8 +519,8 @@ export function clampCircleAgainstNavGrid(
 
 /**
  * Ponto de parada / aproximação segura (stand-off) para o Killer no entorno do gerador:
- * - Posicionado estritamente fora do colisor sólido da máquina (76x88px, extents 38x44px).
- * - Posicionado estritamente dentro da zona amarela de interação (~95px, padrão ~72px).
+ * - Posicionado estritamente fora do colisor sólido da máquina (50x112px, extents 25x56px).
+ * - Posicionado estritamente dentro da zona amarela de interação (130px, padrão ~72px).
  * - Seleciona a melhor coordenada transitável de acordo com o lado de aproximação do Killer.
  */
 export function getGeneratorStandOffPoint(

@@ -134,7 +134,6 @@ export class Player {
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     if (body) {
       body.setCircle(radius, offsetX, offsetY);
-      body.pushable = false;
     }
   }
 
@@ -315,7 +314,6 @@ export class Player {
 
     if (clampResult.clamped) {
       this.sprite.setPosition(clampResult.x, clampResult.y);
-      this.sprite.setVelocity(0, 0);
       (this.sprite.body as Phaser.Physics.Arcade.Body).updateCenter();
     }
     this.lastSafeX = this.sprite.x;
@@ -369,11 +367,11 @@ export class Player {
         }
       : undefined;
 
-    const blockedX = (this.inputDir.x > 0 && Boolean(blocked?.right)) || (this.inputDir.x < 0 && Boolean(blocked?.left));
-    const blockedY = (this.inputDir.y > 0 && Boolean(blocked?.down)) || (this.inputDir.y < 0 && Boolean(blocked?.up));
-    const hasFreeX = this.inputDir.x !== 0 && !blockedX;
-    const hasFreeY = this.inputDir.y !== 0 && !blockedY;
-    const isDirectlyBlocked = !hasFreeX && !hasFreeY;
+    const pushesIntoWallX = (this.inputDir.x > 0 && Boolean(blocked?.right)) || (this.inputDir.x < 0 && Boolean(blocked?.left));
+    const pushesIntoWallY = (this.inputDir.y > 0 && Boolean(blocked?.down)) || (this.inputDir.y < 0 && Boolean(blocked?.up));
+    const hasBlockedInput = (this.inputDir.x !== 0 && pushesIntoWallX) || (this.inputDir.y !== 0 && pushesIntoWallY);
+    const hasUnblockedInput = (this.inputDir.x !== 0 && !pushesIntoWallX) || (this.inputDir.y !== 0 && !pushesIntoWallY);
+    const isDirectlyBlocked = hasBlockedInput && !hasUnblockedInput;
 
     const inputChanged =
       this.inputDir.x !== this.lastInputDir.x ||
@@ -383,7 +381,7 @@ export class Player {
     this.lastInputDir = { ...this.inputDir };
     this.wasInputMoving = true;
 
-    if (isDirectlyBlocked) {
+    if (isDirectlyBlocked && frameDist < 0.1) {
       this.effectiveSpeed = 0;
       this.sampleDist = 0;
       this.sampleTime = 0;
@@ -391,7 +389,7 @@ export class Player {
       const intendedSpeed = this.isSprintingInput
         ? (this.settings?.runSpeed ?? 240)
         : (this.settings?.walkSpeed ?? 140);
-      const strafeSpeed = (blockedX || blockedY) ? intendedSpeed * Math.SQRT1_2 : intendedSpeed;
+      const strafeSpeed = (pushesIntoWallX || pushesIntoWallY) ? intendedSpeed * Math.SQRT1_2 : intendedSpeed;
 
       if (inputChanged || frameDist > 0.05) {
         if (this.effectiveSpeed === 0) {
@@ -405,11 +403,11 @@ export class Player {
       // Amostragem em janela (~50ms) para estabilizar fixedStep de 60Hz contra telas de 120Hz/144Hz
       if (this.sampleTime >= 50) {
         const measured = (this.sampleDist / this.sampleTime) * 1000;
-        if (this.sampleDist < 0.2) {
+        if (this.sampleDist < 0.2 && isDirectlyBlocked) {
           // Corpo estagnado/preso contra obstáculo sólido
           this.effectiveSpeed = 0;
         } else {
-          this.effectiveSpeed = measured;
+          this.effectiveSpeed = Math.max(measured, hasUnblockedInput ? strafeSpeed * 0.5 : 0);
         }
         this.sampleDist = 0;
         this.sampleTime = 0;

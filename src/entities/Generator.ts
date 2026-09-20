@@ -7,7 +7,14 @@
 
 import Phaser from 'phaser';
 import { SoundFX } from '../systems/SoundFX';
-import { addGeneratorProgress, applyExplosionPenalty } from '../utils/gameLogic';
+import {
+  addGeneratorProgress,
+  applyExplosionPenalty,
+  GENERATOR_HITBOX_WIDTH,
+  GENERATOR_HITBOX_HEIGHT,
+  GENERATOR_HITBOX_OFFSET_Y,
+  GENERATOR_INTERACTION_RADIUS
+} from '../utils/gameLogic';
 
 export interface GeneratorDef {
   id: string;
@@ -26,7 +33,9 @@ export class Generator {
 
   public progress = 0; // 0 a 100
   public isCompleted = false;
-  public interactionRadius = 95;
+  public interactionRadius = GENERATOR_INTERACTION_RADIUS;
+  public readonly hitboxWidth = GENERATOR_HITBOX_WIDTH;
+  public readonly hitboxHeight = GENERATOR_HITBOX_HEIGHT;
 
   public container: Phaser.GameObjects.Container;
   public sprite: Phaser.GameObjects.Sprite;
@@ -51,14 +60,21 @@ export class Generator {
     this.x = def.x;
     this.y = def.y;
 
-    // 1. Zona circular de interação no piso (95px)
+    // 1. Zona circular de interação no piso (130px)
     this.floorZone = scene.add.circle(def.x, def.y, this.interactionRadius);
     this.floorZone.setStrokeStyle(2, 0xffaa00, 0.4);
     this.floorZone.setFillStyle(0xffaa00, 0.04);
     this.floorZone.setDepth(1);
 
-    // 2. Colisor físico estático sólido para Player e Killer (76x88px)
-    this.solidBlock = scene.add.rectangle(def.x, def.y, 76, 88, 0x000000, 0);
+    // 2. Colisor físico estático sólido para Player e Killer (50x112px, centrado em y - 4)
+    this.solidBlock = scene.add.rectangle(
+      def.x,
+      def.y + GENERATOR_HITBOX_OFFSET_Y,
+      this.hitboxWidth,
+      this.hitboxHeight,
+      0x000000,
+      0
+    );
     obstaclesGroup.add(this.solidBlock);
     const solidBody = this.solidBlock.body as Phaser.Physics.Arcade.StaticBody;
     if (solidBody) {

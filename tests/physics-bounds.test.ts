@@ -278,4 +278,115 @@ describe('Physics & Navigation Bounds Logic (Pure Rules)', () => {
     // Delta time zero ou negativo -> 0 px/s
     expect(calculateEffectiveSpeed(5, 5, 0)).toBe(0);
   });
+
+  it('enables functional detachment and backoff from 90° corners without pinning or locking into idle', () => {
+    // Grade de teste com quina interna em L:
+    // Parede superior (linha 0) e parede esquerda (coluna 0)
+    const mockNavGrid: number[][] = Array.from({ length: ROWS }, (_, r) =>
+      Array.from({ length: COLS }, (_, c) => (r === 0 || c === 0 ? 1 : 0))
+    );
+
+    const radius = 50;
+    // Posição inicial projetada profundamente para a quina (x = 40, y = 40)
+    const clampedCorner = clampCircleAgainstNavGrid(40, 40, radius, mockNavGrid);
+    expect(clampedCorner.clamped).toBe(true);
+    // Posição ajustada para a tangente de ambas as paredes (TILE_SIZE + radius = 64 + 50 = 114)
+    expect(clampedCorner.x).toBe(114);
+    expect(clampedCorner.y).toBe(114);
+
+    // No frame seguinte em repouso sobre a quina, a histerese (epsilon) NÃO deve acionar clamped
+    const restingCheck = clampCircleAgainstNavGrid(clampedCorner.x, clampedCorner.y, radius, mockNavGrid);
+    expect(restingCheck.clamped).toBe(false);
+
+    // O jogador tenta recuar da quina (movendo para baixo-direita: inputDir = { x: 1, y: 1 })
+    // Flags Arcade reportam bloqueio prévio na esquerda e topo
+    const blockedCorner = { left: true, right: false, up: true, down: false };
+    const escapeInput = { x: 1, y: 1 };
+    const evalEscape = evaluatePlayerMovementState(true, false, 99, 5, blockedCorner, escapeInput);
+
+    // O comando de recuo NÃO pode ser julgado como bloqueado/idle
+    expect(evalEscape.animState).toBe('walk');
+    expect(evalEscape.isMoving).toBe(true);
+
+    // Deslocamento de 1 frame de recuo (2.33px a 140px/s)
+    const newX = clampedCorner.x + 2.33;
+    const newY = clampedCorner.y + 2.33;
+    const movingAwayCheck = clampCircleAgainstNavGrid(newX, newY, radius, mockNavGrid);
+    expect(movingAwayCheck.clamped).toBe(false);
+    expect(movingAwayCheck.x).toBe(newX);
+    expect(movingAwayCheck.y).toBe(newY);
+  });
+
+  it('maintains absolute positional stability without flicker/oscillation during sustained Player vs Killer contact', () => {
+    // Killer em repouso em (500, 300), Player colidindo continuamente de baixo (vy = -140)
+    const killer = { x: 500, y: 300, radius: 84.8, vx: 0, vy: 0 };
+    const playerRadius = 66.25;
+    const minDistance = killer.radius + playerRadius; // 151.05
+
+    let currentPlayerPos = { x: 500, y: 300 + minDistance - 5 }; // Começa 5px sobreposto
+    let lastPlayerY = currentPlayerPos.y;
+
+    // Simula 30 frames de contato sustentado onde a cada frame o jogador avança contra o Killer
+    const stepDelta = 16.666 / 1000;
+    for (let frame = 0; frame < 30; frame++) {
+      // Simula o passo de física: Player avança com velocidade vy = -140 em direção ao Killer
+      const integratedY = frame === 0 ? currentPlayerPos.y : currentPlayerPos.y + (-140 * stepDelta);
+      const activePlayer = {
+        x: currentPlayerPos.x,
+        y: integratedY,
+        radius: playerRadius,
+        vx: 0,
+        vy: -140
+      };
+
+      const res = resolveSolidBodyCollision(killer, activePlayer);
+
+      expect(res.hasCollision).toBe(true);
+      // Killer permanece perfeitamente imóvel (sem jitter ou oscilação)
+      expect(res.killerPos.x).toBe(killer.x);
+      expect(res.killerPos.y).toBe(killer.y);
+
+      // Posição do Player é mantida exatamente na borda de separação >= minDistance
+      const currentDist = Math.hypot(res.killerPos.x - res.playerPos.x, res.killerPos.y - res.playerPos.y);
+      expect(currentDist).toBeGreaterThanOrEqual(minDistance - 0.001);
+
+      if (frame > 0) {
+        // Estabilidade posicional estrita: sem alternância de alta frequência (flicker/tremulação)
+        expect(Math.abs(res.playerPos.y - lastPlayerY)).toBeLessThan(0.001);
+      }
+
+      // Velocidade frontal de aproximação é anulada
+      expect(res.playerVel.y).toBe(0);
+
+      lastPlayerY = res.playerPos.y;
+      currentPlayerPos = { ...res.playerPos };
+    }
+  });
+
+  it('strictly guarantees killer immobility (delta = 0) at rest under continuous player impact while preserving player tangential slide', () => {
+    const killer = { x: 400, y: 400, radius: 84.8, vx: 0, vy: 0 };
+    const playerRadius = 66.25;
+    const minDistance = killer.radius + playerRadius;
+
+    // Player se move diagonalmente para cima e para a direita (tentando deslizar em torno do Killer)
+    // vx = 100, vy = -140 (Killer está diretamente acima em dx = 0, dy = -minDistance)
+    const playerAtContact = {
+      x: 400,
+      y: 400 + minDistance - 2, // 2px sobreposto
+      radius: playerRadius,
+      vx: 100,
+      vy: -140
+    };
+
+    const res = resolveSolidBodyCollision(killer, playerAtContact);
+
+    expect(res.hasCollision).toBe(true);
+    // Killer em repouso: delta = 0
+    expect(res.killerPos.x).toBe(400);
+    expect(res.killerPos.y).toBe(400);
+
+    // Velocidade de aproximação vertical foi zerada, mas componente tangencial horizontal foi 100% preservada
+    expect(res.playerVel.y).toBeCloseTo(0);
+    expect(res.playerVel.x).toBeCloseTo(100);
+  });
 });
