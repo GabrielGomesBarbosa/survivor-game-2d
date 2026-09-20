@@ -6,7 +6,7 @@
 
 import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
-import { calculateEffectiveSpeed, evaluatePlayerMovementState } from '../utils/gameLogic';
+import { evaluatePlayerMovementState } from '../utils/gameLogic';
 
 export class Player {
   public sprite: Phaser.Physics.Arcade.Sprite;
@@ -25,6 +25,16 @@ export class Player {
   public lastSafeY = 960;
   public lastPositionX = 1280;
   public lastPositionY = 960;
+
+  // Configurações ativas de depuração
+  private settings: DebugSettings;
+
+  // Amostragem de deslocamento e velocidade resiliente a taxas de atualização variáveis (60Hz / 120Hz / 144Hz)
+  private sampleDist = 0;
+  private sampleTime = 0;
+  private effectiveSpeed = 0;
+  private lastInputDir = { x: 0, y: 0 };
+  private wasInputMoving = false;
 
   // Ângulo alvo persistente para rotação suave
   private lastTargetAngle = 0;
@@ -47,6 +57,7 @@ export class Player {
    */
   constructor(scene: Phaser.Scene, x: number, y: number, settings: DebugSettings) {
     this.scene = scene;
+    this.settings = settings;
     this.lastSafeX = x;
     this.lastSafeY = y;
     this.lastPositionX = x;
@@ -133,6 +144,7 @@ export class Player {
    * @param {DebugSettings} settings - Parâmetros de velocidade e rotação ativos.
    */
   public update(delta: number, isRepairing: boolean, settings: DebugSettings): void {
+    this.settings = settings;
     this.handleMovement(isRepairing, settings);
     this.handleRotation(delta, settings);
   }
@@ -148,6 +160,9 @@ export class Player {
       this.isMoving = false;
       this.isSprinting = false;
       this.currentSpeed = 0;
+      this.effectiveSpeed = 0;
+      this.sampleDist = 0;
+      this.sampleTime = 0;
       this.inputDir = { x: 0, y: 0 };
       if (this.sprite.anims.isPlaying) {
         this.sprite.anims.stop();
@@ -207,6 +222,16 @@ export class Player {
       this.sprite.setVelocity(moveVector.x * intendedSpeed, moveVector.y * intendedSpeed);
     } else {
       this.sprite.setVelocity(0, 0);
+      this.isMoving = false;
+      this.isSprinting = false;
+      this.currentSpeed = 0;
+      this.effectiveSpeed = 0;
+      this.sampleDist = 0;
+      this.sampleTime = 0;
+      if (this.sprite.anims.isPlaying) {
+        this.sprite.anims.stop();
+        this.sprite.setFrame(0);
+      }
     }
   }
 
@@ -300,35 +325,101 @@ export class Player {
   /**
    * Pós-processamento físico do Player (executado no POST_UPDATE):
    * 1. Aplica trava de segurança anti-tunelamento nas paredes (enforceWallBounds).
-   * 2. Calcula o deslocamento físico real no mundo e a velocidade efetiva.
+   * 2. Calcula o deslocamento físico real no mundo e a velocidade efetiva com amostragem
+   *    estabilizada contra discrepâncias de taxa de atualização (60Hz fixedStep vs 120Hz/144Hz render).
    * 3. Avalia o estado de bloqueio e animação: para e entra em 'idle' sob colisão frontal
-   *    ou continua a animação caso esteja deslizando/strafing pela parede.
+   *    ou continua a animação caso esteja deslizando/strafing pela parede ou em espaço livre.
    */
   public postUpdate(delta: number, navGrid: number[][]): void {
     this.enforceWallBounds(navGrid);
+
+    if (!this.isInputMoving) {
+      this.isMoving = false;
+      this.isSprinting = false;
+      this.currentSpeed = 0;
+      this.effectiveSpeed = 0;
+      this.sampleDist = 0;
+      this.sampleTime = 0;
+      this.wasInputMoving = false;
+      this.lastInputDir = { x: 0, y: 0 };
+      if (this.sprite.anims.isPlaying) {
+        this.sprite.anims.stop();
+        this.sprite.setFrame(0);
+      }
+      this.lastPositionX = this.sprite.x;
+      this.lastPositionY = this.sprite.y;
+      return;
+    }
 
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     const deltaMs = delta > 0 ? delta : 16.66;
     const dx = this.sprite.x - this.lastPositionX;
     const dy = this.sprite.y - this.lastPositionY;
-    const effectiveSpeed = calculateEffectiveSpeed(dx, dy, deltaMs);
+    const frameDist = Math.hypot(dx, dy);
 
     this.lastPositionX = this.sprite.x;
     this.lastPositionY = this.sprite.y;
 
     const blocked = body
       ? {
-          left: body.blocked.left,
-          right: body.blocked.right,
-          up: body.blocked.up,
-          down: body.blocked.down
+          left: Boolean(body.blocked.left || body.touching.left),
+          right: Boolean(body.blocked.right || body.touching.right),
+          up: Boolean(body.blocked.up || body.touching.up),
+          down: Boolean(body.blocked.down || body.touching.down)
         }
       : undefined;
+
+    const blockedX = (this.inputDir.x > 0 && Boolean(blocked?.right)) || (this.inputDir.x < 0 && Boolean(blocked?.left));
+    const blockedY = (this.inputDir.y > 0 && Boolean(blocked?.down)) || (this.inputDir.y < 0 && Boolean(blocked?.up));
+    const hasFreeX = this.inputDir.x !== 0 && !blockedX;
+    const hasFreeY = this.inputDir.y !== 0 && !blockedY;
+    const isDirectlyBlocked = !hasFreeX && !hasFreeY;
+
+    const inputChanged =
+      this.inputDir.x !== this.lastInputDir.x ||
+      this.inputDir.y !== this.lastInputDir.y ||
+      !this.wasInputMoving;
+
+    this.lastInputDir = { ...this.inputDir };
+    this.wasInputMoving = true;
+
+    if (isDirectlyBlocked) {
+      this.effectiveSpeed = 0;
+      this.sampleDist = 0;
+      this.sampleTime = 0;
+    } else {
+      const intendedSpeed = this.isSprintingInput
+        ? (this.settings?.runSpeed ?? 240)
+        : (this.settings?.walkSpeed ?? 140);
+      const strafeSpeed = (blockedX || blockedY) ? intendedSpeed * Math.SQRT1_2 : intendedSpeed;
+
+      if (inputChanged || frameDist > 0.05) {
+        if (this.effectiveSpeed === 0) {
+          this.effectiveSpeed = strafeSpeed;
+        }
+      }
+
+      this.sampleDist += frameDist;
+      this.sampleTime += deltaMs;
+
+      // Amostragem em janela (~50ms) para estabilizar fixedStep de 60Hz contra telas de 120Hz/144Hz
+      if (this.sampleTime >= 50) {
+        const measured = (this.sampleDist / this.sampleTime) * 1000;
+        if (this.sampleDist < 0.2) {
+          // Corpo estagnado/preso contra obstáculo sólido
+          this.effectiveSpeed = 0;
+        } else {
+          this.effectiveSpeed = measured;
+        }
+        this.sampleDist = 0;
+        this.sampleTime = 0;
+      }
+    }
 
     const evalState = evaluatePlayerMovementState(
       this.isInputMoving,
       this.isSprintingInput,
-      effectiveSpeed,
+      this.effectiveSpeed,
       5,
       blocked,
       this.inputDir
