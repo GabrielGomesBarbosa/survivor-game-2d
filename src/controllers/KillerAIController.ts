@@ -9,7 +9,7 @@ import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
 import { Player } from '../entities/Player';
 import { Generator } from '../entities/Generator';
-import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS } from '../utils/gameLogic';
+import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint } from '../utils/gameLogic';
 import { IKillerController } from './KillerController';
 
 export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE';
@@ -23,6 +23,7 @@ export interface IKillerPawn {
   rotateTowards(targetAngle: number, delta: number, turnSpeed: number): void;
   playAnimation(key: string): void;
   stopAnimation(frame?: number): void;
+  isWalkableTile(x: number, y: number): boolean;
   hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean;
   calculatePath(fromX: number, fromY: number, toX: number, toY: number, onPathFound: (path: Array<{ x: number; y: number }>) => void): void;
   renderVisionGraphic(settings: DebugSettings, targetPos: { x: number; y: number }, isChase: boolean): void;
@@ -123,8 +124,9 @@ export class KillerAIController implements IKillerController {
    */
   private handleChaseState(delta: number, player: Player, distToPlayer: number, settings: DebugSettings): void {
     const speed = settings.killerSpeed;
+    const minBodyDist = settings.hitboxRadius * settings.playerScale * 2.28;
 
-    if (distToPlayer < 24) {
+    if (distToPlayer <= minBodyDist) {
       this.pawn.stopMovement();
       this.pawn.stopAnimation(0);
       const dx = player.x - this.pawn.x;
@@ -212,21 +214,32 @@ export class KillerAIController implements IKillerController {
    * Estado PATROL: navega em direção ao gerador ou sala alvo.
    */
   private handlePatrolState(delta: number, generators: Generator[], settings: DebugSettings): void {
+    if (!this.patrolManager.currentDestination) {
+      this.advanceToNextPatrolGenerator(generators);
+      return;
+    }
+
     const distToTarget = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y);
     const isTargetingGenerator = Boolean(
       this.patrolManager.currentDestination && this.patrolManager.currentDestination.type === 'generator'
     );
-    const safeArrivalRadius = isTargetingGenerator ? 110 : 45;
+    const currentDest = this.patrolManager.currentDestination;
+    const distToGen = (isTargetingGenerator && currentDest)
+      ? Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, currentDest.x, currentDest.y)
+      : distToTarget;
 
-    // Chegou a uma distância segura do gerador / sala
-    if (this.patrolManager.hasReachedSafeDistance(distToTarget, safeArrivalRadius)) {
+    const arrivalThreshold = isTargetingGenerator ? (settings.inspectionDistance ?? 110) : 45;
+
+    // Chegou a uma distância segura do gerador (ou ao ponto stand-off)
+    if (distToGen <= arrivalThreshold || distToTarget <= 36) {
       this.pawn.stopMovement();
       this.pawn.stopAnimation(0);
 
-      // Inicia inspeção de 2.5s com simulação de olhar ao redor
+      // Inicia inspeção com tempo configurável (inspectionTime, padrão: 2.5s)
       this.state = 'INSPECTING';
       this.baseInspectAngle = this.pawn.rotation;
-      this.patrolManager.startInspection(2500);
+      const inspectMs = (settings.inspectionTime ?? 2.5) * 1000;
+      this.patrolManager.startInspection(inspectMs);
       this.currentPath = [];
       return;
     }
@@ -287,10 +300,17 @@ export class KillerAIController implements IKillerController {
 
     const nextDest = this.patrolManager.getNextDestination(candidateGens, MAJOR_FACILITY_ROOMS);
     if (nextDest) {
-      // Offset suave para rondar a máquina sem colidir no centro físico
-      const offsetX = Phaser.Math.Between(-25, 25);
-      const offsetY = Phaser.Math.Between(-25, 25);
-      this.patrolTarget.set(nextDest.x + offsetX, nextDest.y + offsetY);
+      if (nextDest.type === 'generator') {
+        const standOff = getGeneratorStandOffPoint(
+          { x: nextDest.x, y: nextDest.y },
+          { x: this.pawn.x, y: this.pawn.y },
+          (wx, wy) => this.pawn.isWalkableTile(wx, wy),
+          72
+        );
+        this.patrolTarget.set(standOff.x, standOff.y);
+      } else {
+        this.patrolTarget.set(nextDest.x, nextDest.y);
+      }
     }
 
     this.currentPath = [];

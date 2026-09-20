@@ -8,7 +8,7 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, resolveSolidBodyCollision } from '../utils/gameLogic';
 import { Player } from './Player';
 import { Generator } from './Generator';
 import { IKillerController } from '../controllers/KillerController';
@@ -167,10 +167,16 @@ export class Killer implements IKillerPawn {
     }
   }
 
+  public isWalkableTile(x: number, y: number): boolean {
+    const col = Math.floor(x / TILE_SIZE);
+    const row = Math.floor(y / TILE_SIZE);
+    return row >= 0 && row < ROWS && col >= 0 && col < COLS && this.navGrid[row]?.[col] === 0;
+  }
+
   /**
-   * Tratamento de colisão física sólida não-elástica com o Player (Anti-Tunelamento).
+   * Tratamento de colisão física sólida não-elástica com o Player (Anti-Tunelamento e Bloqueio Corporal Rígido).
    */
-  public handlePlayerCollision(player: Player, onAttack?: () => void): void {
+  public handlePlayerCollision(player: Player, settings: DebugSettings, onAttack?: () => void): void {
     if (!this.sprite || !player.sprite || !this.sprite.body || !player.sprite.body) return;
 
     const now = this.scene.time.now;
@@ -183,14 +189,36 @@ export class Killer implements IKillerPawn {
     const playerBody = player.sprite.body as Phaser.Physics.Arcade.Body;
     const killerBody = this.sprite.body as Phaser.Physics.Arcade.Body;
 
-    const dx = this.sprite.x - player.sprite.x;
-    const dy = this.sprite.y - player.sprite.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
+    const playerRadius = settings.hitboxRadius * settings.playerScale;
+    const killerRadius = playerRadius * 1.28;
 
-    if (dist > 0.001) {
-      const resolved = resolveAntiPushVelocity(killerBody.velocity, playerBody.velocity, dx, dy);
-      killerBody.setVelocity(resolved.killerVel.x, resolved.killerVel.y);
-      playerBody.setVelocity(resolved.playerVel.x, resolved.playerVel.y);
+    const resolution = resolveSolidBodyCollision(
+      {
+        x: this.sprite.x,
+        y: this.sprite.y,
+        radius: killerRadius,
+        vx: killerBody.velocity.x,
+        vy: killerBody.velocity.y
+      },
+      {
+        x: player.sprite.x,
+        y: player.sprite.y,
+        radius: playerRadius,
+        vx: playerBody.velocity.x,
+        vy: playerBody.velocity.y
+      },
+      (wx, wy) => this.isWalkableTile(wx, wy)
+    );
+
+    if (resolution.hasCollision) {
+      this.sprite.setPosition(resolution.killerPos.x, resolution.killerPos.y);
+      player.sprite.setPosition(resolution.playerPos.x, resolution.playerPos.y);
+
+      killerBody.setVelocity(resolution.killerVel.x, resolution.killerVel.y);
+      playerBody.setVelocity(resolution.playerVel.x, resolution.playerVel.y);
+
+      killerBody.updateCenter();
+      playerBody.updateCenter();
     }
   }
 

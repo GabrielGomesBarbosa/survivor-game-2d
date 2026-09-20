@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   GeneratorPatrolManager,
-  MAJOR_FACILITY_ROOMS
+  MAJOR_FACILITY_ROOMS,
+  getGeneratorStandOffPoint
 } from '../src/utils/gameLogic';
 
 describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', () => {
@@ -50,6 +51,35 @@ describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', ()
     expect(fourth?.name).toBe('Gerador A');
   });
 
+  it('calculates stand-off waypoints outside the 76x88 solid collider but inside the 95px yellow interaction zone', () => {
+    const gen = { x: 2240, y: 960 };
+    const standOff = getGeneratorStandOffPoint(gen);
+
+    const dist = Math.hypot(standOff.x - gen.x, standOff.y - gen.y);
+
+    // Deve estar dentro do raio amarelo de 95px
+    expect(dist).toBeLessThanOrEqual(95);
+
+    // Deve estar estritamente fora da caixa sólida de 76x88px (half-extents 38x44px)
+    const insideBox = Math.abs(standOff.x - gen.x) <= 38 && Math.abs(standOff.y - gen.y) <= 44;
+    expect(insideBox).toBe(false);
+  });
+
+  it('selects walkable stand-off candidate closest to incoming position', () => {
+    const gen = { x: 1000, y: 1000 };
+    // Killer approaching from the North (y < 1000)
+    const killerPos = { x: 1000, y: 500 };
+
+    const isWalkable = (_x: number, y: number) => y !== 928; // Supondo que Norte está bloqueado
+
+    const standOff = getGeneratorStandOffPoint(gen, killerPos, isWalkable, 72);
+
+    // Como Norte (y = 928) não é walkable, deve selecionar outro candidato válido
+    expect(standOff.y).not.toBe(928);
+    const dist = Math.hypot(standOff.x - gen.x, standOff.y - gen.y);
+    expect(dist).toBeCloseTo(72);
+  });
+
   it('detects arrival at safe distance from generator to avoid pushing solid collider', () => {
     // Distância <= 110px é considerada segura para parar e inspecionar
     expect(manager.hasReachedSafeDistance(105, 110)).toBe(true);
@@ -58,7 +88,7 @@ describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', ()
     expect(manager.hasReachedSafeDistance(250, 110)).toBe(false);
   });
 
-  it('transitions patrol target after inspection duration (2.5s) completes', () => {
+  it('transitions patrol target after inspection duration completes', () => {
     const gens = [
       { name: 'Gerador A', x: 2240, y: 960, progress: 0, isCompleted: false },
       { name: 'Gerador B', x: 320, y: 960, progress: 0, isCompleted: false }
@@ -68,7 +98,7 @@ describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', ()
     const target1 = manager.getNextDestination(gens);
     expect(target1?.name).toBe('Gerador A');
 
-    // 2. Chega no Gerador A e inicia inspeção de 2500ms
+    // 2. Chega no Gerador A e inicia inspeção configurável (ex: 2500ms)
     manager.startInspection(2500);
     expect(manager.isInspecting).toBe(true);
     expect(manager.inspectTimer).toBe(2500);
@@ -86,7 +116,7 @@ describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', ()
     expect(manager.isInspecting).toBe(false);
     expect(manager.inspectTimer).toBe(0);
 
-    // 5. Após inspeção concluída, solicita o próximo gerador da ronda (Gerador B)
+    // 5. Após inspeção concluída, solicita compulsoriamente o próximo gerador da ronda (Gerador B)
     const nextTarget = manager.getNextDestination(gens);
     expect(nextTarget?.name).toBe('Gerador B');
   });

@@ -110,7 +110,7 @@ export class SandboxScene extends Phaser.Scene {
       this.physics.add.collider(this.killer.sprite, group);
     });
     this.physics.add.overlap(this.killer.sprite, this.player.sprite, () => {
-      this.killer.handlePlayerCollision(this.player, () => this.telemetryHud.showAttackAlert());
+      this.killer.handlePlayerCollision(this.player, this.debugPanel.settings, () => this.telemetryHud.showAttackAlert());
     });
     this.events.on(Phaser.Scenes.Events.POST_UPDATE, () => this.player.enforceWallBounds(this.mapData.navGrid));
 

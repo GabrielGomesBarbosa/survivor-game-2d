@@ -120,6 +120,134 @@ export function resolveAntiPushVelocity(
   return { killerVel: kVel, playerVel: pVel };
 }
 
+export interface SolidCollisionResult {
+  hasCollision: boolean;
+  overlap: number;
+  minDistance: number;
+  currentDistance: number;
+  killerPos: { x: number; y: number };
+  playerPos: { x: number; y: number };
+  killerVel: { x: number; y: number };
+  playerVel: { x: number; y: number };
+}
+
+/**
+ * Resolução pura de colisão física sólida não-elástica entre Killer e Player:
+ * - Se a distância for menor que a soma dos raios (minDistance), detecta penetração.
+ * - Reposiciona os corpos para garantir distância >= minDistance (bloqueio rígido sem sobreposição).
+ * - Anula completamente a velocidade vetorial de aproximação ao longo da normal de colisão.
+ */
+export function resolveSolidBodyCollision(
+  killer: { x: number; y: number; radius: number; vx?: number; vy?: number },
+  player: { x: number; y: number; radius: number; vx?: number; vy?: number },
+  isWalkable?: (x: number, y: number) => boolean
+): SolidCollisionResult {
+  const kVel = { x: killer.vx ?? 0, y: killer.vy ?? 0 };
+  const pVel = { x: player.vx ?? 0, y: player.vy ?? 0 };
+  const dx = killer.x - player.x;
+  const dy = killer.y - player.y;
+  const dist = Math.hypot(dx, dy);
+  const minDistance = killer.radius + player.radius;
+
+  if (dist >= minDistance) {
+    return {
+      hasCollision: false,
+      overlap: 0,
+      minDistance,
+      currentDistance: dist,
+      killerPos: { x: killer.x, y: killer.y },
+      playerPos: { x: player.x, y: player.y },
+      killerVel: kVel,
+      playerVel: pVel
+    };
+  }
+
+  const overlap = minDistance - dist;
+  const nx = dist > 0.001 ? dx / dist : 0;
+  const ny = dist > 0.001 ? dy / dist : -1;
+
+  let killerX = killer.x;
+  let killerY = killer.y;
+  let playerX = player.x;
+  let playerY = player.y;
+
+  if (isWalkable) {
+    const candidateKx = killer.x + nx * overlap;
+    const candidateKy = killer.y + ny * overlap;
+    if (isWalkable(candidateKx, candidateKy)) {
+      killerX = candidateKx;
+      killerY = candidateKy;
+    } else {
+      const candidatePx = player.x - nx * overlap;
+      const candidatePy = player.y - ny * overlap;
+      if (isWalkable(candidatePx, candidatePy)) {
+        playerX = candidatePx;
+        playerY = candidatePy;
+      } else {
+        killerX = candidateKx;
+        killerY = candidateKy;
+      }
+    }
+  } else {
+    killerX += nx * overlap;
+    killerY += ny * overlap;
+  }
+
+  const { killerVel: resKVel, playerVel: resPVel } = resolveAntiPushVelocity(kVel, pVel, dx, dy);
+
+  return {
+    hasCollision: true,
+    overlap,
+    minDistance,
+    currentDistance: dist,
+    killerPos: { x: killerX, y: killerY },
+    playerPos: { x: playerX, y: playerY },
+    killerVel: resKVel,
+    playerVel: resPVel
+  };
+}
+
+/**
+ * Ponto de parada / aproximação segura (stand-off) para o Killer no entorno do gerador:
+ * - Posicionado estritamente fora do colisor sólido da máquina (76x88px, extents 38x44px).
+ * - Posicionado estritamente dentro da zona amarela de interação (~95px, padrão ~72px).
+ * - Seleciona a melhor coordenada transitável de acordo com o lado de aproximação do Killer.
+ */
+export function getGeneratorStandOffPoint(
+  gen: { x: number; y: number },
+  fromPos?: { x: number; y: number },
+  isWalkable?: (x: number, y: number) => boolean,
+  standOffDist: number = 72
+): { x: number; y: number } {
+  const candidates = [
+    { x: gen.x, y: gen.y - standOffDist }, // Norte
+    { x: gen.x, y: gen.y + standOffDist }, // Sul
+    { x: gen.x - standOffDist, y: gen.y }, // Oeste
+    { x: gen.x + standOffDist, y: gen.y }  // Leste
+  ];
+
+  const validCandidates = isWalkable
+    ? candidates.filter((c) => isWalkable(c.x, c.y))
+    : candidates;
+
+  const list = validCandidates.length > 0 ? validCandidates : candidates;
+
+  if (fromPos) {
+    let best = list[0];
+    let bestDist = Infinity;
+    for (const c of list) {
+      const d = Math.hypot(c.x - fromPos.x, c.y - fromPos.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  return list[0];
+}
+
 export interface PatrolTarget {
   name: string;
   x: number;

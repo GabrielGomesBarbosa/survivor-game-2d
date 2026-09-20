@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { COLS, ROWS, TILE_SIZE } from '../src/config/constants';
-import { wrapAngle, resolveAntiPushVelocity } from '../src/utils/gameLogic';
+import { wrapAngle, resolveAntiPushVelocity, resolveSolidBodyCollision } from '../src/utils/gameLogic';
 
 describe('Physics & Navigation Bounds Logic (Pure Rules)', () => {
   it('correctly wraps angles into [-PI, PI] without discontinuity', () => {
@@ -28,6 +28,57 @@ describe('Physics & Navigation Bounds Logic (Pure Rules)', () => {
     // Player remains stationary, not pushed
     expect(resolved.playerVel.x).toBe(0);
     expect(resolved.playerVel.y).toBe(0);
+  });
+
+  it('strictly enforces solid body non-penetration: separates overlapping bodies to distance >= sum of radii', () => {
+    // Player radius: 66.25, Killer radius: 84.8 -> minDistance = 151.05
+    const player = { x: 100, y: 100, radius: 66.25, vx: 0, vy: 0 };
+    const killer = { x: 100, y: 80, radius: 84.8, vx: 0, vy: 150 }; // distance = 20px (overlap = 131.05px)
+
+    const res = resolveSolidBodyCollision(killer, player);
+
+    expect(res.hasCollision).toBe(true);
+    expect(res.overlap).toBeCloseTo(131.05, 1);
+    expect(res.minDistance).toBeCloseTo(151.05, 1);
+
+    // Distance between resolved positions MUST be >= minDistance
+    const finalDist = Math.hypot(res.killerPos.x - res.playerPos.x, res.killerPos.y - res.playerPos.y);
+    expect(finalDist).toBeGreaterThanOrEqual(res.minDistance - 0.001);
+    expect(finalDist).toBeCloseTo(151.05, 1);
+
+    // Approach velocity along normal must be cancelled to 0
+    expect(res.killerVel.y).toBeCloseTo(0);
+  });
+
+  it('preserves positions and velocities when bodies do not overlap (distance >= sum of radii)', () => {
+    const player = { x: 100, y: 100, radius: 66.25, vx: 10, vy: 10 };
+    const killer = { x: 100, y: 300, radius: 84.8, vx: 0, vy: -50 }; // distance = 200px > 151.05px
+
+    const res = resolveSolidBodyCollision(killer, player);
+
+    expect(res.hasCollision).toBe(false);
+    expect(res.overlap).toBe(0);
+    expect(res.killerPos.x).toBe(100);
+    expect(res.killerPos.y).toBe(300);
+    expect(res.playerPos.x).toBe(100);
+    expect(res.playerPos.y).toBe(100);
+    expect(res.killerVel.y).toBe(-50);
+    expect(res.playerVel.x).toBe(10);
+  });
+
+  it('displaces player when killer is blocked against a solid wall', () => {
+    const player = { x: 100, y: 100, radius: 66.25, vx: 0, vy: 0 };
+    const killer = { x: 100, y: 80, radius: 84.8, vx: 0, vy: 150 };
+
+    // Simula que a posição para onde o killer seria empurrado (y < 80) é parede sólida
+    const isWalkable = (_x: number, y: number) => y >= 80;
+
+    const res = resolveSolidBodyCollision(killer, player, isWalkable);
+
+    expect(res.hasCollision).toBe(true);
+    // Player é empurrado para frente para liberar espaço
+    const finalDist = Math.hypot(res.killerPos.x - res.playerPos.x, res.killerPos.y - res.playerPos.y);
+    expect(finalDist).toBeGreaterThanOrEqual(res.minDistance - 0.001);
   });
 
   it('allows killer to slide tangentially without sticking', () => {

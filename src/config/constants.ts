@@ -34,6 +34,8 @@ export interface DebugSettings {
   // Killer Settings
   killerSpeed: number;
   detectionRadius: number;
+  inspectionTime: number; // Tempo de pausa de inspeção no gerador em segundos (padrão: 2.5s)
+  inspectionDistance: number; // Distância segura de chegada/inspeção ao gerador em pixels (padrão: 110px)
   showKillerVision: boolean;
   showAStarPath: boolean;
   killerAiEnabled: boolean;
@@ -58,6 +60,8 @@ export const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   cameraZoom: 1.0,
   killerSpeed: 170,
   detectionRadius: 280,
+  inspectionTime: 2.5,
+  inspectionDistance: 110,
   showKillerVision: true,
   showAStarPath: true,
   killerAiEnabled: true,

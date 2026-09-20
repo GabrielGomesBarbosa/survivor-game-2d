@@ -165,6 +165,20 @@ export class DebugPanel {
     );
     this.attachTooltip(
       killerFolder
+        .add(this.settings, 'inspectionTime', 0.5, 8.0, 0.5)
+        .name('Tempo Inspeção (s)')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Tempo de pausa em segundos que o Assassino passa inspecionando o gerador antes de avançar para o próximo.'
+    );
+    this.attachTooltip(
+      killerFolder
+        .add(this.settings, 'inspectionDistance', 80, 160, 5)
+        .name('Distância Inspeção')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Distância em pixels para considerar chegada ao gerador e disparar o estado de inspeção (zona amarela).'
+    );
+    this.attachTooltip(
+      killerFolder
         .add(this.settings, 'showKillerVision')
         .name('Debug Visão'),
       'Renderiza círculos de detecção (laranja em patrulha, vermelho em perseguição) e linha de mira.'
