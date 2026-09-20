@@ -648,8 +648,8 @@ export class SandboxScene extends Phaser.Scene {
       // Se o mouse estiver a mais de 4px de distância do centro, recalcular targetAngle
       // (evita oscilação brusca quando o cursor está exatamente no ponto central)
       if (dx * dx + dy * dy >= 16) {
-        // + Math.PI / 2 porque a orientação natural dos frames do survivor no spritesheet aponta para o norte (+Y para cima)
-        this.lastTargetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) + Math.PI / 2);
+        // - Math.PI / 2 porque os frames originais do survivor no spritesheet estão desenhados olhando para frente/sul (+Y para baixo)
+        this.lastTargetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
       }
     }
 
