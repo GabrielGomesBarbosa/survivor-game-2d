@@ -2,9 +2,115 @@ import Phaser from 'phaser';
 import GUI from 'lil-gui';
 import EasyStar from 'easystarjs';
 import survivorMeta from '../assets/survivor.json';
+import generatorMeta from '../assets/generator.json';
 
 export const WORLD_WIDTH = 2560;
 export const WORLD_HEIGHT = 1920;
+
+export interface GeneratorData {
+  id: string;
+  name: string;
+  roomName: string;
+  x: number;
+  y: number;
+  progress: number; // 0 a 100
+  isCompleted: boolean;
+  interactionRadius: number; // ~95px
+  container: Phaser.GameObjects.Container;
+  sprite: Phaser.GameObjects.Sprite;
+  progressBarFill: Phaser.GameObjects.Rectangle;
+  progressText: Phaser.GameObjects.Text;
+  floorZone: Phaser.GameObjects.Arc;
+}
+
+class SoundFX {
+  private static ctx: AudioContext | null = null;
+
+  private static getContext(): AudioContext | null {
+    if (!this.ctx) {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        this.ctx = new AudioCtx();
+      }
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+    return this.ctx;
+  }
+
+  static playWarningCue(): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.28);
+    } catch (_) {}
+  }
+
+  static playSuccess(isGreat: boolean): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(isGreat ? 1174.66 : 987.77, ctx.currentTime);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.25);
+    } catch (_) {}
+  }
+
+  static playExplosion(): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(140, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(28, ctx.currentTime + 0.5);
+      gain.gain.setValueAtTime(0.35, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.5);
+    } catch (_) {}
+  }
+
+  static playCompletion(): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    try {
+      [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+        if (!ctx) return;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.08);
+        gain.gain.setValueAtTime(0.18, ctx.currentTime + i * 0.08);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.08 + 0.65);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.08);
+        osc.stop(ctx.currentTime + i * 0.08 + 0.65);
+      });
+    } catch (_) {}
+  }
+}
 
 export interface DebugSettings {
   walkSpeed: number;
@@ -23,6 +129,9 @@ export interface DebugSettings {
   showKillerVision: boolean;
   showAStarPath: boolean;
   killerAiEnabled: boolean;
+  // Generator & Skill Check Settings
+  generatorRepairTime: number; // Tempo total para 0 a 100% em segundos (padrão: 12s)
+  skillCheckFrequency: number; // 1 (raro) a 5 (frequente), padrão: 3
 }
 
 const STORAGE_KEY = 'horror_topdown_debug_settings';
@@ -42,7 +151,9 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   detectionRadius: 280,
   showKillerVision: true,
   showAStarPath: true,
-  killerAiEnabled: true
+  killerAiEnabled: true,
+  generatorRepairTime: 12,
+  skillCheckFrequency: 3
 };
 
 export class SandboxScene extends Phaser.Scene {
@@ -59,6 +170,7 @@ export class SandboxScene extends Phaser.Scene {
   private aStarGraphic!: Phaser.GameObjects.Graphics;
   private lastAttackTime = 0;
   private attackAlertUI!: Phaser.GameObjects.Container;
+  private attackAlertText!: Phaser.GameObjects.Text;
 
   // EasyStar.js A* Pathfinding
   private easystar!: EasyStar.js;
@@ -100,8 +212,37 @@ export class SandboxScene extends Phaser.Scene {
   private keyA!: Phaser.Input.Keyboard.Key;
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyD!: Phaser.Input.Keyboard.Key;
+  private keyE!: Phaser.Input.Keyboard.Key;
+  private keySpace!: Phaser.Input.Keyboard.Key;
   private keyShift!: Phaser.Input.Keyboard.Key;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+
+  // Geradores & Interação (DBD Prototype)
+  private generators: GeneratorData[] = [];
+  private activeNearbyGen: GeneratorData | null = null;
+  private isRepairing = false;
+  private repairStaggerTimer = 0;
+  private repairPromptUI!: Phaser.GameObjects.Container;
+  private repairPromptText!: Phaser.GameObjects.Text;
+  private repairProgressBarFill!: Phaser.GameObjects.Rectangle;
+  private repairPercentText!: Phaser.GameObjects.Text;
+
+  // Skill Check (QTE)
+  private isSkillCheckActive = false;
+  private skillCheckNeedleAngle = 0;
+  private skillCheckZoneStart = 120;
+  private skillCheckZoneSize = 42;
+  private skillCheckGreatSize = 12;
+  private skillCheckContainer!: Phaser.GameObjects.Container;
+  private skillCheckDialGraphic!: Phaser.GameObjects.Graphics;
+  private skillCheckNeedleGraphic!: Phaser.GameObjects.Graphics;
+  private skillCheckFeedbackText!: Phaser.GameObjects.Text;
+  private skillCheckNextTimer = 0;
+  private isSkillCheckWarning = false;
+  private noiseAlertGraphic!: Phaser.GameObjects.Graphics;
+  private noiseAlertTimer = 0;
+  private noiseAlertPos = { x: 0, y: 0 };
+  private hudGensVal: HTMLElement | null = null;
 
   // Debug settings (iniciadas com os padrões ou carregadas do localStorage)
   public debugSettings: DebugSettings = { ...DEFAULT_DEBUG_SETTINGS };
@@ -140,6 +281,13 @@ export class SandboxScene extends Phaser.Scene {
 
   private onWindowKeyDown = (e: KeyboardEvent): void => {
     this.activeKeys.add(e.code);
+
+    if (e.code === 'Space') {
+      if (this.isSkillCheckActive) {
+        e.preventDefault();
+        this.onSkillCheckInput();
+      }
+    }
 
     // Se o elemento ativo for um controle do lil-gui (ex: checkbox de Giro Instantâneo),
     // desfocar automaticamente para que o teclado continue no jogo
@@ -185,14 +333,26 @@ export class SandboxScene extends Phaser.Scene {
       frameWidth,
       frameHeight
     });
+
+    // Carregar spritesheet do Gerador DBD (3 frames horizontais: 0: inativo, 1: reparando, 2: concluído)
+    const genFrameWidth = generatorMeta.frameWidth || 960;
+    const genFrameHeight = generatorMeta.frameHeight || 1536;
+
+    this.load.spritesheet('generator', 'assets/generator.png', {
+      frameWidth: genFrameWidth,
+      frameHeight: genFrameHeight
+    });
   }
 
   create(): void {
     this.createEnvironment();
+    this.createGenerators();
     this.createAnimations();
     this.createPlayer();
     this.createKiller();
     this.createAttackUI();
+    this.createRepairPromptUI();
+    this.createSkillCheckUI();
     this.setupCamera();
     this.setupInput();
     this.setupCollisions();
@@ -201,6 +361,10 @@ export class SandboxScene extends Phaser.Scene {
     // Gráficos de Debug para Rota A*
     this.aStarGraphic = this.add.graphics();
     this.aStarGraphic.setDepth(6);
+
+    // Gráficos de Notificação de Ruído (Explosão de Geradores DBD)
+    this.noiseAlertGraphic = this.add.graphics();
+    this.noiseAlertGraphic.setDepth(9);
 
     // Configuração anti-tunelamento para física de alta precisão
     this.physics.world.OVERLAP_BIAS = 16;
@@ -352,14 +516,14 @@ export class SandboxScene extends Phaser.Scene {
         grid[20][c] = '#';
       }
     }
-    // Bancada médica / cabine de triagem central (Cols 4..5, Rows 14..15: 128x128 com 192px de folga em todas as direções)
+    // 3.3 Ala Oeste - Enfermaria & Gerador #2 (Cols 4..5, Rows 14..15: 128x128)
     for (let r = 14; r <= 15; r++) {
       for (let c = 4; c <= 5; c++) {
-        grid[r][c] = '#';
+        grid[r][c] = 'G';
       }
     }
 
-    // 3.4 Ala Leste - Gerador A (Cols 30..38, Rows 9..20)
+    // 3.4 Ala Leste - Usina & Gerador #1 (Cols 30..38, Rows 9..20)
     // Divisória com o Corredor Leste (Col 30) com duas portas amplas de 192px (Rows 11..13 e Rows 16..18)
     for (let r = 9; r <= 20; r++) {
       if ((r >= 9 && r <= 10) || (r >= 14 && r <= 15) || (r >= 19 && r <= 20)) {
@@ -373,10 +537,10 @@ export class SandboxScene extends Phaser.Scene {
         grid[20][c] = '#';
       }
     }
-    // Bloco do Gerador Principal A (Cols 34..35, Rows 14..15: 128x128 com 192px de folga ao redor)
+    // Bloco do Gerador Principal #1 (Cols 34..35, Rows 14..15: 128x128 com 192px de folga ao redor)
     for (let r = 14; r <= 15; r++) {
       for (let c = 34; c <= 35; c++) {
-        grid[r][c] = '#';
+        grid[r][c] = 'G';
       }
     }
 
@@ -416,6 +580,12 @@ export class SandboxScene extends Phaser.Scene {
     }
     for (let c = 30; c <= 38; c++) {
       if (c < 33 || c > 35) grid[24][c] = '#';
+    }
+    // Bloco do Gerador #3 (Cols 19..20, Rows 25..26: 128x128 com ampla folga)
+    for (let r = 25; r <= 26; r++) {
+      for (let c = 19; c <= 20; c++) {
+        grid[r][c] = 'G';
+      }
     }
 
     // 4. Algoritmo Ganancioso de Fusão Retangular 2D (Greedy 2D Rect Merger)
@@ -465,12 +635,12 @@ export class SandboxScene extends Phaser.Scene {
       }
     }
 
-    // 5. Configurar grelha lógica para EasyStar.js (0 = livre, 1 = parede intransitável)
+    // 5. Configurar grelha lógica para EasyStar.js (0 = livre, 1 = parede/gerador intransitável)
     this.navGrid = [];
     for (let r = 0; r < ROWS; r++) {
       this.navGrid[r] = new Array(COLS);
       for (let c = 0; c < COLS; c++) {
-        this.navGrid[r][c] = grid[r][c] === '#' ? 1 : 0;
+        this.navGrid[r][c] = (grid[r][c] === '#' || grid[r][c] === 'G') ? 1 : 0;
       }
     }
 
@@ -546,18 +716,10 @@ export class SandboxScene extends Phaser.Scene {
       color: '#496b5c'
     }).setOrigin(0.5).setDepth(1);
 
-    // Detalhes no console central da Enfermaria (Cols 4..5, Rows 14..15 -> X: 320, Y: 960)
-    this.add.text(320, 960, '✚ CABINE DE\nTRIAGEM', {
-      fontSize: '11px',
-      color: '#a7d5be',
-      fontStyle: 'bold',
-      align: 'center'
-    }).setOrigin(0.5).setDepth(3);
-
     // ----------------------------------------------------
-    // ALA LESTE (Gerador A: 2240, 960)
+    // ALA LESTE (Usina de Energia: 2240, 960)
     // ----------------------------------------------------
-    this.add.text(2240, 720, 'ALA LESTE // USINA GERADOR A', {
+    this.add.text(2240, 720, 'ALA LESTE // USINA ELÉTRICA', {
       fontSize: '13px',
       color: '#c99653',
       fontStyle: 'bold'
@@ -567,18 +729,6 @@ export class SandboxScene extends Phaser.Scene {
       fontSize: '10px',
       color: '#8a6534'
     }).setOrigin(0.5).setDepth(1);
-
-    // Detalhes no gerador central (Cols 34..35, Rows 14..15 -> X: 2240, Y: 960)
-    const genWarningZone = this.add.rectangle(2240, 960, 160, 160, 0x000000, 0);
-    genWarningZone.setStrokeStyle(2, 0xd49b3d, 0.4);
-    genWarningZone.setDepth(1);
-
-    this.add.text(2240, 960, '⚡ GERADOR A\nALTA TENSÃO', {
-      fontSize: '11px',
-      color: '#ffd073',
-      fontStyle: 'bold',
-      align: 'center'
-    }).setOrigin(0.5).setDepth(3);
 
     // ----------------------------------------------------
     // ALA NORTE (Ala de Contenção - Spawn do Killer: 1280, 224)
@@ -767,16 +917,16 @@ export class SandboxScene extends Phaser.Scene {
     this.attackAlertUI.setDepth(200);
     this.attackAlertUI.setAlpha(0);
 
-    const bg = this.add.rectangle(0, 0, 360, 44, 0x3d0b0b, 0.92);
+    const bg = this.add.rectangle(0, 0, 420, 44, 0x3d0b0b, 0.92);
     bg.setStrokeStyle(2, 0xff3333);
 
-    const text = this.add.text(0, 0, '⚠️ VOCÊ FOI ATACADO PELO ASSASSINO!', {
+    this.attackAlertText = this.add.text(0, 0, '⚠️ VOCÊ FOI ATACADO PELO ASSASSINO!', {
       fontSize: '13px',
       color: '#ffdddd',
       fontStyle: 'bold'
     }).setOrigin(0.5);
 
-    this.attackAlertUI.add([bg, text]);
+    this.attackAlertUI.add([bg, this.attackAlertText]);
   }
 
   private handleKillerAttack(): void {
@@ -791,8 +941,20 @@ export class SandboxScene extends Phaser.Scene {
     this.showAttackToast();
   }
 
-  private showAttackToast(): void {
-    if (!this.attackAlertUI) return;
+  public showNotificationToast(message: string, isDanger: boolean = true): void {
+    if (!this.attackAlertUI || !this.attackAlertText) return;
+
+    this.attackAlertText.setText(message);
+    const bg = this.attackAlertUI.getAt(0) as Phaser.GameObjects.Rectangle;
+    if (bg) {
+      if (isDanger) {
+        bg.setFillStyle(0x3d0b0b, 0.92);
+        bg.setStrokeStyle(2, 0xff3333);
+      } else {
+        bg.setFillStyle(0x064e3b, 0.92);
+        bg.setStrokeStyle(2, 0x10b981);
+      }
+    }
 
     this.attackAlertUI.setAlpha(1);
     this.tweens.killTweensOf(this.attackAlertUI);
@@ -801,9 +963,13 @@ export class SandboxScene extends Phaser.Scene {
       targets: this.attackAlertUI,
       alpha: 0,
       duration: 800,
-      delay: 1400,
+      delay: 1600,
       ease: 'Power2'
     });
+  }
+
+  private showAttackToast(): void {
+    this.showNotificationToast('⚠️ VOCÊ FOI ATACADO PELO ASSASSINO!', true);
   }
 
   /**
@@ -893,6 +1059,8 @@ export class SandboxScene extends Phaser.Scene {
       this.keyA = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
       this.keyS = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S);
       this.keyD = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
+      this.keyE = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+      this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
       this.keyShift = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
       this.cursors = this.input.keyboard.createCursorKeys();
     }
@@ -1112,6 +1280,46 @@ export class SandboxScene extends Phaser.Scene {
       'Taxa real de quadros por segundo gerada pelo loop do Phaser.'
     );
 
+    const genFolder = this.gui.addFolder('Geradores (DBD)');
+
+    this.attachTooltip(
+      genFolder
+        .add(this.debugSettings, 'generatorRepairTime', 4, 30, 1)
+        .name('Tempo Reparo (s)')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Tempo necessário em segundos segurando [E] para concluir 100% do reparo de um gerador.'
+    );
+
+    this.attachTooltip(
+      genFolder
+        .add(this.debugSettings, 'skillCheckFrequency', 2, 12, 0.5)
+        .name('Frequência QTE (s)')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Intervalo médio em segundos entre os testes de reação (Skill Checks) durante o conserto.'
+    );
+
+    const genActions = {
+      testSkillCheck: () => this.forceTestSkillCheck(),
+      completeAll: () => this.completeAllGenerators(),
+      resetAll: () => this.resetAllGenerators()
+    };
+
+    this.attachTooltip(
+      genFolder.add(genActions, 'testSkillCheck').name('🎯 Disparar Skill Check'),
+      'Dispara imediatamente um evento de Skill Check (QTE com barra giratória e [Espaço]) para testes.'
+    );
+
+    this.attachTooltip(
+      genFolder.add(genActions, 'completeAll').name('⚡ Concluir Todos'),
+      'Define todos os 3 geradores para 100% concluídos imediatamente.'
+    );
+
+    this.attachTooltip(
+      genFolder.add(genActions, 'resetAll').name('🔄 Resetar Geradores'),
+      'Reseta o progresso de todos os geradores para 0% e reativa o estado incompleto.'
+    );
+
+    genFolder.open();
     speedsFolder.open();
     displayFolder.open();
     monitorFolder.open();
@@ -1273,6 +1481,12 @@ export class SandboxScene extends Phaser.Scene {
         if (typeof parsed.killerAiEnabled === 'boolean') {
           this.debugSettings.killerAiEnabled = parsed.killerAiEnabled;
         }
+        if (typeof parsed.generatorRepairTime === 'number' && !isNaN(parsed.generatorRepairTime)) {
+          this.debugSettings.generatorRepairTime = parsed.generatorRepairTime;
+        }
+        if (typeof parsed.skillCheckFrequency === 'number' && !isNaN(parsed.skillCheckFrequency)) {
+          this.debugSettings.skillCheckFrequency = parsed.skillCheckFrequency;
+        }
       }
     } catch (e) {
       console.warn('Erro ao carregar debugSettings do localStorage:', e);
@@ -1325,6 +1539,9 @@ export class SandboxScene extends Phaser.Scene {
     this.handleMovement();
     this.handleRotation(delta);
     this.handleKillerAI(delta);
+    this.handleGeneratorInteraction(delta);
+    this.updateSkillCheck(delta);
+    this.updateNoiseAlert(delta);
     this.updateTelemetry();
   }
 
@@ -1332,8 +1549,21 @@ export class SandboxScene extends Phaser.Scene {
    * Movimentação:
    * - Teclas WASD com movimento omnidirecional normalizado
    * - Sprint com tecla Shift (ativa runSpeed e animação run)
+   * - Imobilidade obrigatória durante o reparo de geradores
    */
   private handleMovement(): void {
+    if (this.isRepairing) {
+      this.player.setVelocity(0, 0);
+      this.monitorState.isMoving = false;
+      this.monitorState.isSprinting = false;
+      this.monitorState.currentSpeed = 0;
+      if (this.player.anims.isPlaying && this.player.anims.currentAnim?.key !== 'walk') {
+        this.player.anims.stop();
+        this.player.setFrame(0);
+      }
+      return;
+    }
+
     let moveX = 0;
     let moveY = 0;
 
@@ -1525,6 +1755,21 @@ export class SandboxScene extends Phaser.Scene {
     }
     if (this.hudKillerDist) {
       this.hudKillerDist.textContent = this.monitorState.killerDist || '--';
+    }
+
+    if (!this.hudGensVal) {
+      this.hudGensVal = document.getElementById('hud-gens-val');
+    }
+    if (this.hudGensVal) {
+      const completedCount = this.generators.filter((g) => g.isCompleted).length;
+      this.hudGensVal.textContent = `${completedCount}/3`;
+      if (completedCount === 3) {
+        this.hudGensVal.style.color = '#38bdf8';
+      } else if (completedCount > 0) {
+        this.hudGensVal.style.color = '#4ade80';
+      } else {
+        this.hudGensVal.style.color = '#f59e0b';
+      }
     }
   }
 
@@ -1893,10 +2138,21 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   private pickNewPatrolTarget(): void {
-    const randomWp = Phaser.Utils.Array.GetRandom(this.patrolWaypoints);
-    const offsetX = Phaser.Math.Between(-25, 25);
-    const offsetY = Phaser.Math.Between(-25, 25);
-    this.patrolTarget.set(randomWp.x + offsetX, randomWp.y + offsetY);
+    const incompleteGens = this.generators.filter((g) => !g.isCompleted);
+
+    // 50% de chance de patrulhar a ronda de um gerador incompleto
+    if (incompleteGens.length > 0 && Math.random() < 0.5) {
+      const targetGen = Phaser.Utils.Array.GetRandom(incompleteGens);
+      const offsetX = Phaser.Math.Between(-35, 35);
+      const offsetY = Phaser.Math.Between(-35, 35);
+      this.patrolTarget.set(targetGen.x + offsetX, targetGen.y + offsetY);
+    } else {
+      const randomWp = Phaser.Utils.Array.GetRandom(this.patrolWaypoints);
+      const offsetX = Phaser.Math.Between(-25, 25);
+      const offsetY = Phaser.Math.Between(-25, 25);
+      this.patrolTarget.set(randomWp.x + offsetX, randomWp.y + offsetY);
+    }
+
     this.patrolPath = [];
     this.patrolPathIndex = 0;
     this.calculatePatrolPath(this.killer.x, this.killer.y, this.patrolTarget.x, this.patrolTarget.y);
@@ -2038,5 +2294,700 @@ export class SandboxScene extends Phaser.Scene {
         this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
       }
     }
+  }
+
+  // =========================================================================
+  // SISTEMA DE GERADORES & INTERAÇÃO (PROTÓTIPO ESTILO DEAD BY DAYLIGHT)
+  // =========================================================================
+
+  /**
+   * Cria os 3 geradores distribuídos em setores estratégicos da instalação:
+   * 1. Ala Leste (Usina) - Coord (2240, 960)
+   * 2. Ala Oeste (Enfermaria) - Coord (320, 960)
+   * 3. Ala Sul (Manutenção) - Coord (1280, 1664)
+   * Cada gerador conta com colisão física estática, sinalização luminosa âmbar
+   * pulsante, zona circular de reparo e indicador visual de progresso.
+   */
+  private createGenerators(): void {
+    this.generators = [];
+
+    const defs = [
+      {
+        id: 'gen-1',
+        name: 'Gerador A',
+        roomName: 'Ala Leste (Usina)',
+        x: 2240,
+        y: 960
+      },
+      {
+        id: 'gen-2',
+        name: 'Gerador B',
+        roomName: 'Ala Oeste (Enfermaria)',
+        x: 320,
+        y: 960
+      },
+      {
+        id: 'gen-3',
+        name: 'Gerador C',
+        roomName: 'Ala Sul (Manutenção)',
+        x: 1280,
+        y: 1664
+      }
+    ];
+
+    defs.forEach((def) => {
+      // 1. Zona circular de interação no piso (estilo Dead by Daylight)
+      const floorZone = this.add.circle(def.x, def.y, 95);
+      floorZone.setStrokeStyle(2, 0xffaa00, 0.4);
+      floorZone.setFillStyle(0xffaa00, 0.04);
+      floorZone.setDepth(1);
+
+      // 2. Colisor físico estático sólido para Player e Killer (76x88px)
+      const solidBlock = this.add.rectangle(def.x, def.y, 76, 88, 0x000000, 0);
+      this.obstacles.add(solidBlock);
+      const solidBody = solidBlock.body as Phaser.Physics.Arcade.StaticBody;
+      if (solidBody) {
+        solidBody.updateFromGameObject();
+      }
+
+      // 3. Container da máquina industrial do gerador
+      const container = this.add.container(def.x, def.y);
+      container.setDepth(3);
+
+      // Sombra suave sob o gerador
+      const shadow = this.add.ellipse(0, 10, 80, 92, 0x06080e, 0.45);
+
+      // Sprite do Gerador carregado a partir de generator.png
+      // Frame 0: Inativo / Danificado (LED vermelho)
+      // Frame 1: Em reparação / Faíscas
+      // Frame 2: Concluído / Energizado (visor verde)
+      const sprite = this.add.sprite(0, -4, 'generator', 0);
+      sprite.setScale(0.095);
+      sprite.setOrigin(0.5, 0.5);
+
+      // Mini indicador de status sobre o gerador
+      const labelText = this.add.text(0, -78, `${def.name} • ${def.roomName}`, {
+        fontSize: '11px',
+        color: '#94a3b8',
+        fontStyle: 'bold',
+        stroke: '#000000',
+        strokeThickness: 2
+      }).setOrigin(0.5);
+
+      const barBg = this.add.rectangle(0, -64, 68, 8, 0x0f172a);
+      barBg.setStrokeStyle(1, 0x334155);
+
+      const progressBarFill = this.add.rectangle(-33, -64, 0, 6, 0xf59e0b);
+      progressBarFill.setOrigin(0, 0.5);
+
+      const progressText = this.add.text(0, -52, '0%', {
+        fontSize: '10px',
+        color: '#e2e8f0',
+        fontStyle: 'bold',
+        stroke: '#000000',
+        strokeThickness: 2
+      }).setOrigin(0.5);
+
+      container.add([
+        shadow,
+        sprite,
+        labelText,
+        barBg,
+        progressBarFill,
+        progressText
+      ]);
+
+      const genData: GeneratorData = {
+        id: def.id,
+        name: def.name,
+        roomName: def.roomName,
+        x: def.x,
+        y: def.y,
+        progress: 0,
+        isCompleted: false,
+        interactionRadius: 95,
+        container,
+        sprite,
+        progressBarFill,
+        progressText,
+        floorZone
+      };
+
+      this.generators.push(genData);
+    });
+  }
+
+  /**
+   * Atualiza a representação visual do gerador no mundo de acordo com o progresso atual.
+   * - Quando incompleto: exibe o Frame 0 (LED vermelho)
+   * - Enquanto em reparo ativo: exibe o Frame 1 (Faíscas elétricas)
+   * - Ao concluir (100%): fixa permanentemente no Frame 2 (Visor verde)
+   */
+  private updateGeneratorVisuals(gen: GeneratorData): void {
+    const pct = Math.floor(gen.progress);
+
+    if (gen.isCompleted) {
+      gen.sprite.setFrame(2); // Frame 2: Concluído / Energizado (visor verde)
+      gen.progressBarFill.width = 66;
+      gen.progressBarFill.setFillStyle(0x00ff88);
+      gen.progressText.setText('CONCLUÍDO');
+      gen.progressText.setColor('#00ff88');
+
+      gen.floorZone.setStrokeStyle(2, 0x00ff88, 0.5);
+      gen.floorZone.setFillStyle(0x00ff88, 0.06);
+    } else {
+      if (this.isRepairing && this.activeNearbyGen === gen) {
+        gen.sprite.setFrame(1); // Frame 1: Em reparação / Faíscas
+      } else {
+        gen.sprite.setFrame(0); // Frame 0: Inativo / Danificado (LED vermelho)
+      }
+
+      gen.progressBarFill.width = Math.max(0, Math.min(66, (pct / 100) * 66));
+      const fillColor = pct > 75 ? 0x84cc16 : pct > 35 ? 0xf59e0b : 0xef4444;
+      gen.progressBarFill.setFillStyle(fillColor);
+      gen.progressText.setText(`${pct}%`);
+      gen.progressText.setColor('#e2e8f0');
+
+      gen.floorZone.setStrokeStyle(2, 0xffaa00, 0.4);
+      gen.floorZone.setFillStyle(0xffaa00, 0.04);
+    }
+
+    if (this.hudGensVal) {
+      const completedCount = this.generators.filter((g) => g.isCompleted).length;
+      this.hudGensVal.textContent = `${completedCount}/3`;
+      if (completedCount === 3) {
+        this.hudGensVal.style.color = '#38bdf8';
+      } else if (completedCount > 0) {
+        this.hudGensVal.style.color = '#4ade80';
+      } else {
+        this.hudGensVal.style.color = '#f59e0b';
+      }
+    }
+  }
+
+  /**
+   * Cria o prompt interativo na tela '[E] Reparar Gerador' com barra de progresso em tempo real.
+   */
+  private createRepairPromptUI(): void {
+    this.repairPromptUI = this.add.container(640, 640);
+    this.repairPromptUI.setScrollFactor(0);
+    this.repairPromptUI.setDepth(150);
+    this.repairPromptUI.setVisible(false);
+
+    const bg = this.add.rectangle(0, 0, 360, 52, 0x090d16, 0.88);
+    bg.setStrokeStyle(1.5, 0x3b82f6);
+
+    this.repairPromptText = this.add.text(0, -10, '[E] Reparar Gerador', {
+      fontSize: '13px',
+      color: '#ffffff',
+      fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    const barBg = this.add.rectangle(0, 14, 260, 8, 0x1e293b).setStrokeStyle(1, 0x334155);
+
+    this.repairProgressBarFill = this.add.rectangle(-130, 14, 0, 6, 0x38bdf8).setOrigin(0, 0.5);
+
+    this.repairPercentText = this.add.text(148, 14, '0%', {
+      fontSize: '11px',
+      color: '#94a3b8',
+      fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    this.repairPromptUI.add([
+      bg,
+      this.repairPromptText,
+      barBg,
+      this.repairProgressBarFill,
+      this.repairPercentText
+    ]);
+  }
+
+  /**
+   * Cria o widget circular de Skill Check (QTE) posicionado no centro da tela.
+   */
+  private createSkillCheckUI(): void {
+    this.skillCheckContainer = this.add.container(640, 360);
+    this.skillCheckContainer.setScrollFactor(0);
+    this.skillCheckContainer.setDepth(250);
+    this.skillCheckContainer.setVisible(false);
+
+    this.skillCheckDialGraphic = this.add.graphics();
+    this.skillCheckNeedleGraphic = this.add.graphics();
+
+    this.skillCheckFeedbackText = this.add.text(0, -82, '', {
+      fontSize: '16px',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 3
+    }).setOrigin(0.5);
+
+    const promptHint = this.add.text(0, 0, '[ESPAÇO]', {
+      fontSize: '11px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 2
+    }).setOrigin(0.5);
+
+    this.skillCheckContainer.add([
+      this.skillCheckDialGraphic,
+      this.skillCheckNeedleGraphic,
+      promptHint,
+      this.skillCheckFeedbackText
+    ]);
+  }
+
+  /**
+   * Renderiza a base e as zonas de acerto (Good Zone e Great Zone) do Skill Check.
+   */
+  private drawSkillCheckDial(): void {
+    this.skillCheckDialGraphic.clear();
+
+    const toRad = (deg: number) => Phaser.Math.DegToRad(deg - 90);
+
+    // Fundo do círculo
+    this.skillCheckDialGraphic.fillStyle(0x0f172a, 0.8);
+    this.skillCheckDialGraphic.fillCircle(0, 0, 64);
+
+    // Borda externa
+    this.skillCheckDialGraphic.lineStyle(2, 0x334155, 0.9);
+    this.skillCheckDialGraphic.strokeCircle(0, 0, 64);
+
+    // Trilha da agulha (trilho circular escuro)
+    this.skillCheckDialGraphic.lineStyle(8, 0x1e293b, 0.85);
+    this.skillCheckDialGraphic.strokeCircle(0, 0, 50);
+
+    // Zona Good (branca, estilo DBD)
+    const goodStartRad = toRad(this.skillCheckZoneStart);
+    const goodEndRad = toRad(this.skillCheckZoneStart + this.skillCheckZoneSize);
+    this.skillCheckDialGraphic.lineStyle(10, 0xe2e8f0, 0.9);
+    this.skillCheckDialGraphic.beginPath();
+    this.skillCheckDialGraphic.arc(0, 0, 50, goodStartRad, goodEndRad, false);
+    this.skillCheckDialGraphic.strokePath();
+
+    // Zona Great (verde brilhante no início da zona de acerto)
+    const greatStartRad = toRad(this.skillCheckZoneStart);
+    const greatEndRad = toRad(this.skillCheckZoneStart + this.skillCheckGreatSize);
+    this.skillCheckDialGraphic.lineStyle(12, 0x22c55e, 1);
+    this.skillCheckDialGraphic.beginPath();
+    this.skillCheckDialGraphic.arc(0, 0, 50, greatStartRad, greatEndRad, false);
+    this.skillCheckDialGraphic.strokePath();
+
+    // Marcador delimitador de início
+    this.skillCheckDialGraphic.lineStyle(2, 0xef4444, 0.8);
+    this.skillCheckDialGraphic.lineBetween(
+      Math.cos(greatStartRad) * 42,
+      Math.sin(greatStartRad) * 42,
+      Math.cos(greatStartRad) * 58,
+      Math.sin(greatStartRad) * 58
+    );
+  }
+
+  /**
+   * Renderiza a agulha vermelha giratória do Skill Check apontando para o ângulo atual.
+   */
+  private drawSkillCheckNeedle(): void {
+    this.skillCheckNeedleGraphic.clear();
+
+    const needleRad = Phaser.Math.DegToRad(this.skillCheckNeedleAngle - 90);
+    const nx = Math.cos(needleRad) * 58;
+    const ny = Math.sin(needleRad) * 58;
+
+    // Agulha vermelha vibrante
+    this.skillCheckNeedleGraphic.lineStyle(3.5, 0xef4444, 1);
+    this.skillCheckNeedleGraphic.lineBetween(0, 0, nx, ny);
+
+    // Ponta e pivô da agulha
+    this.skillCheckNeedleGraphic.fillStyle(0xef4444, 1);
+    this.skillCheckNeedleGraphic.fillCircle(nx, ny, 3.5);
+    this.skillCheckNeedleGraphic.fillCircle(0, 0, 5);
+  }
+
+  /**
+   * Gerencia a interação do Player com geradores próximos:
+   * - Identifica gerador incompleto no raio de 95px
+   * - Monitora tecla [E] segurada para progredir no conserto
+   * - Pausa e preserva o progresso se a tecla for liberada
+   */
+  private handleGeneratorInteraction(delta: number): void {
+    // Se o jogador estiver atordoado por explosão recente de gerador, decrementar cooldown
+    if (this.repairStaggerTimer > 0) {
+      this.repairStaggerTimer -= delta;
+      if (this.repairPromptUI) {
+        this.repairPromptUI.setVisible(true);
+        this.repairPromptText.setText('💥 SISTEMA EM CURTO-CIRCUITO...');
+        this.repairProgressBarFill.setFillStyle(0xef4444);
+      }
+      return;
+    }
+
+    // Encontrar o gerador mais próximo dentro do raio de interação
+    let closestGen: GeneratorData | null = null;
+    let closestDist = Infinity;
+
+    for (const gen of this.generators) {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, gen.x, gen.y);
+      if (dist <= gen.interactionRadius && dist < closestDist) {
+        closestDist = dist;
+        closestGen = gen;
+      }
+    }
+
+    this.activeNearbyGen = closestGen;
+
+    if (!closestGen || closestGen.isCompleted) {
+      if (this.isRepairing) {
+        this.stopRepairing();
+      }
+      if (this.repairPromptUI) {
+        this.repairPromptUI.setVisible(false);
+      }
+      return;
+    }
+
+    // Exibir prompt de reparo
+    this.repairPromptUI.setVisible(true);
+    const isPressingE = Boolean(
+      this.keyE?.isDown ||
+      this.activeKeys.has('KeyE')
+    );
+
+    if (isPressingE) {
+      if (!this.isRepairing) {
+        this.startRepairing(closestGen);
+      } else if (!closestGen.isCompleted) {
+        closestGen.sprite.setFrame(1);
+      }
+
+      // Progresso contínuo de conserto
+      const repairRate = 100 / Math.max(1, this.debugSettings.generatorRepairTime); // % por segundo
+      closestGen.progress = Math.min(100, closestGen.progress + repairRate * (delta / 1000));
+      this.updateGeneratorVisuals(closestGen);
+
+      // Atualizar UI do prompt
+      this.repairPromptText.setText(`🔧 REPARANDO... [E] Manter Pressionado (${closestGen.roomName})`);
+      this.repairProgressBarFill.setFillStyle(0x10b981);
+      this.repairProgressBarFill.width = Math.max(0, Math.min(260, (closestGen.progress / 100) * 260));
+      this.repairPercentText.setText(`${Math.floor(closestGen.progress)}%`);
+
+      if (closestGen.progress >= 100) {
+        this.completeGenerator(closestGen);
+      }
+    } else {
+      if (this.isRepairing) {
+        this.stopRepairing();
+      } else if (!closestGen.isCompleted) {
+        closestGen.sprite.setFrame(0);
+      }
+
+      this.repairPromptText.setText(`[E] Reparar ${closestGen.name} (${closestGen.roomName})`);
+      this.repairProgressBarFill.setFillStyle(0x38bdf8);
+      this.repairProgressBarFill.width = Math.max(0, Math.min(260, (closestGen.progress / 100) * 260));
+      this.repairPercentText.setText(`${Math.floor(closestGen.progress)}%`);
+    }
+  }
+
+  private startRepairing(gen: GeneratorData): void {
+    this.isRepairing = true;
+    if (!gen.isCompleted) {
+      gen.sprite.setFrame(1); // Frame 1: Em reparação / Faíscas
+    }
+    this.resetSkillCheckTimer();
+  }
+
+  private stopRepairing(): void {
+    this.isRepairing = false;
+    if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
+      this.activeNearbyGen.sprite.setFrame(0); // Volta ao Frame 0: Inativo
+    }
+    if (this.isSkillCheckActive) {
+      // Soltar o gerador no meio de um Skill Check provoca falha
+      this.resolveSkillCheck(false, false);
+    }
+    this.isSkillCheckWarning = false;
+  }
+
+  private resetSkillCheckTimer(): void {
+    const baseSeconds = Math.max(1.5, this.debugSettings.skillCheckFrequency);
+    // Variação orgânica entre 80% e 130% do tempo base configurado
+    this.skillCheckNextTimer = Phaser.Math.Between(baseSeconds * 800, baseSeconds * 1300);
+    this.isSkillCheckWarning = false;
+  }
+
+  private completeGenerator(gen: GeneratorData): void {
+    gen.isCompleted = true;
+    gen.progress = 100;
+    gen.sprite.setFrame(2); // Frame 2: Concluído / Energizado (visor verde)
+    SoundFX.playCompletion();
+    this.updateGeneratorVisuals(gen);
+    this.stopRepairing();
+
+    const completedCount = this.generators.filter((g) => g.isCompleted).length;
+    if (completedCount === this.generators.length) {
+      this.showNotificationToast('🏆 TODOS OS 3 GERADORES FORAM RESTAURADOS!', false);
+    } else {
+      this.showNotificationToast(`⚡ ${gen.name} restaurado com sucesso! (${completedCount}/3)`, false);
+    }
+  }
+
+  /**
+   * Dispara um novo evento de Skill Check.
+   */
+  private startSkillCheck(): void {
+    this.isSkillCheckActive = true;
+    this.isSkillCheckWarning = false;
+    this.skillCheckNeedleAngle = 0;
+
+    // A zona de acerto surge entre 110° e 260° para dar tempo de reação enquanto a agulha viaja
+    this.skillCheckZoneStart = Phaser.Math.Between(110, 260);
+    this.skillCheckZoneSize = 44;
+    this.skillCheckGreatSize = 12;
+
+    this.drawSkillCheckDial();
+    this.drawSkillCheckNeedle();
+    this.skillCheckFeedbackText.setText('');
+    this.skillCheckContainer.setVisible(true);
+  }
+
+  /**
+   * Atualização contínua do Skill Check (aviso sonoro prévio, rotação da agulha e timeout).
+   */
+  private updateSkillCheck(delta: number): void {
+    // 1. Temporizador de disparo de Skill Check enquanto estiver reparando
+    if (this.isRepairing && !this.isSkillCheckActive && this.repairStaggerTimer <= 0) {
+      this.skillCheckNextTimer -= delta;
+
+      // Aviso sonoro prévio 550ms antes da agulha começar a girar
+      if (this.skillCheckNextTimer <= 550 && !this.isSkillCheckWarning) {
+        this.isSkillCheckWarning = true;
+        SoundFX.playWarningCue();
+      }
+
+      if (this.skillCheckNextTimer <= 0) {
+        this.startSkillCheck();
+      }
+    }
+
+    // 2. Animação da agulha giratória do QTE
+    if (this.isSkillCheckActive) {
+      // Velocidade de rotação da agulha (~330 graus por segundo, completa 360° em aprox 1.09s)
+      const needleSpeed = 330;
+      this.skillCheckNeedleAngle += needleSpeed * (delta / 1000);
+      this.drawSkillCheckNeedle();
+
+      // Passou do limite da zona de acerto sem apertar Espaço -> Falha por expiração
+      if (this.skillCheckNeedleAngle > this.skillCheckZoneStart + this.skillCheckZoneSize + 12) {
+        this.resolveSkillCheck(false, false);
+      }
+    }
+  }
+
+  /**
+   * Trata o input da tecla [Espaço] durante o Skill Check ativo.
+   */
+  private onSkillCheckInput(): void {
+    if (!this.isSkillCheckActive) return;
+
+    const angle = this.skillCheckNeedleAngle;
+    const greatEnd = this.skillCheckZoneStart + this.skillCheckGreatSize;
+    const goodEnd = this.skillCheckZoneStart + this.skillCheckZoneSize;
+
+    if (angle >= this.skillCheckZoneStart && angle <= greatEnd) {
+      // Great Skill Check (+5% bônus)
+      this.resolveSkillCheck(true, true);
+    } else if (angle > greatEnd && angle <= goodEnd) {
+      // Good Skill Check (+1.5% bônus)
+      this.resolveSkillCheck(true, false);
+    } else {
+      // Erro de timing (adiantado ou atrasado)
+      this.resolveSkillCheck(false, false);
+    }
+  }
+
+  /**
+   * Conclui o Skill Check aplicando recompensas ou penalidades.
+   */
+  private resolveSkillCheck(success: boolean, isGreat: boolean): void {
+    this.isSkillCheckActive = false;
+    this.skillCheckNeedleGraphic.clear();
+
+    if (success) {
+      SoundFX.playSuccess(isGreat);
+      const bonus = isGreat ? 5 : 1.5;
+      const label = isGreat ? '⭐ PERFEITO! +5%' : '👍 BOM! +1.5%';
+      const color = isGreat ? '#22c55e' : '#38bdf8';
+      this.showSkillCheckFeedback(label, color);
+
+      if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
+        this.activeNearbyGen.progress = Math.min(100, this.activeNearbyGen.progress + bonus);
+        this.updateGeneratorVisuals(this.activeNearbyGen);
+        if (this.activeNearbyGen.progress >= 100) {
+          this.completeGenerator(this.activeNearbyGen);
+        }
+      }
+    } else {
+      this.showSkillCheckFeedback('💥 FALHA!', '#ef4444');
+      if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
+        this.triggerGeneratorExplosion(this.activeNearbyGen);
+      } else {
+        // Teste avulso sem gerador associado
+        SoundFX.playExplosion();
+        this.cameras.main.shake(300, 0.01);
+      }
+    }
+
+    this.time.delayedCall(600, () => {
+      if (!this.isSkillCheckActive) {
+        this.skillCheckContainer.setVisible(false);
+        this.skillCheckDialGraphic.clear();
+      }
+    });
+
+    this.resetSkillCheckTimer();
+  }
+
+  private showSkillCheckFeedback(text: string, color: string): void {
+    this.skillCheckFeedbackText.setText(text);
+    this.skillCheckFeedbackText.setColor(color);
+    this.skillCheckFeedbackText.setScale(1.4);
+    this.tweens.killTweensOf(this.skillCheckFeedbackText);
+    this.tweens.add({
+      targets: this.skillCheckFeedbackText,
+      scale: 1,
+      duration: 300,
+      ease: 'Back.Out'
+    });
+  }
+
+  /**
+   * Trata a explosão do gerador em caso de falha no Skill Check:
+   * - Som estrondoso de explosão
+   * - Screen shake e flash vermelho
+   * - Penalidade de 10% no progresso
+   * - Partículas de faíscas espalhadas
+   * - Marcador visual de som no mapa
+   * - Alerta e redireciona o Assassino para investigar o local
+   */
+  private triggerGeneratorExplosion(gen: GeneratorData): void {
+    SoundFX.playExplosion();
+    this.cameras.main.shake(350, 0.014);
+    this.cameras.main.flash(200, 220, 60, 20);
+
+    // Penalidade de progresso (-10%)
+    gen.progress = Math.max(0, gen.progress - 10);
+    this.updateGeneratorVisuals(gen);
+
+    // Interrompe reparo e trava por 1.4s (stagger)
+    this.isRepairing = false;
+    this.repairStaggerTimer = 1400;
+
+    // Efeitos de faíscas e ping de barulho no mapa
+    this.createExplosionBurst(gen.x, gen.y);
+    this.triggerNoiseAlert(gen.x, gen.y);
+
+    // Alerta o assassino
+    this.alertKillerToNoise(gen.x, gen.y);
+  }
+
+  private createExplosionBurst(x: number, y: number): void {
+    const colors = [0xffdd44, 0xff8822, 0xff2200, 0xffffff];
+    for (let i = 0; i < 22; i++) {
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const speed = Phaser.Math.Between(70, 240);
+      const color = Phaser.Math.RND.pick(colors);
+      const radius = Phaser.Math.Between(2, 5);
+      const spark = this.add.circle(x, y, radius, color);
+      spark.setDepth(12);
+
+      this.tweens.add({
+        targets: spark,
+        x: x + Math.cos(angle) * speed,
+        y: y + Math.sin(angle) * speed,
+        alpha: 0,
+        scale: 0.2,
+        duration: Phaser.Math.Between(350, 650),
+        ease: 'Cubic.Out',
+        onComplete: () => spark.destroy()
+      });
+    }
+  }
+
+  private triggerNoiseAlert(x: number, y: number): void {
+    this.noiseAlertPos = { x, y };
+    this.noiseAlertTimer = 2200;
+  }
+
+  private updateNoiseAlert(delta: number): void {
+    if (!this.noiseAlertGraphic) return;
+    this.noiseAlertGraphic.clear();
+
+    if (this.noiseAlertTimer <= 0) return;
+    this.noiseAlertTimer -= delta;
+
+    const progress = (2200 - this.noiseAlertTimer) / 2200;
+    const radius = 28 + progress * 140;
+    const alpha = Math.max(0, 1 - progress);
+
+    // Onda concêntrica de alerta sonoro
+    this.noiseAlertGraphic.lineStyle(3, 0xffaa00, alpha * 0.9);
+    this.noiseAlertGraphic.strokeCircle(this.noiseAlertPos.x, this.noiseAlertPos.y, radius);
+
+    this.noiseAlertGraphic.fillStyle(0xff3300, alpha * 0.22);
+    this.noiseAlertGraphic.fillCircle(this.noiseAlertPos.x, this.noiseAlertPos.y, 16);
+
+    // Ícone tático de mira / explosão
+    this.noiseAlertGraphic.lineStyle(2, 0xffdd44, alpha);
+    this.noiseAlertGraphic.lineBetween(
+      this.noiseAlertPos.x - 20,
+      this.noiseAlertPos.y,
+      this.noiseAlertPos.x + 20,
+      this.noiseAlertPos.y
+    );
+    this.noiseAlertGraphic.lineBetween(
+      this.noiseAlertPos.x,
+      this.noiseAlertPos.y - 20,
+      this.noiseAlertPos.x,
+      this.noiseAlertPos.y + 20
+    );
+  }
+
+  /**
+   * Alerta a inteligência artificial do Assassino quanto ao ruído de explosão.
+   */
+  private alertKillerToNoise(x: number, y: number): void {
+    if (!this.killer || !this.debugSettings.killerAiEnabled) return;
+
+    if (this.killerState === 'PATROL') {
+      this.patrolTarget.set(x, y);
+      this.patrolPath = [];
+      this.patrolPathIndex = 0;
+      this.patrolWaitTimer = 0;
+      this.calculatePatrolPath(this.killer.x, this.killer.y, x, y);
+    }
+
+    this.showNotificationToast('💥 O Assassino foi alertado da explosão do gerador!', true);
+  }
+
+  public forceTestSkillCheck(): void {
+    this.startSkillCheck();
+  }
+
+  public completeAllGenerators(): void {
+    this.generators.forEach((gen) => {
+      gen.progress = 100;
+      gen.isCompleted = true;
+      this.updateGeneratorVisuals(gen);
+    });
+    SoundFX.playCompletion();
+    this.showNotificationToast('⚡ TODOS OS GERADORES RESTAURADOS (DEBUG)!', false);
+  }
+
+  public resetAllGenerators(): void {
+    this.generators.forEach((gen) => {
+      gen.progress = 0;
+      gen.isCompleted = false;
+      this.updateGeneratorVisuals(gen);
+    });
+    this.showNotificationToast('🔄 Progresso de todos os geradores resetado!', false);
   }
 }

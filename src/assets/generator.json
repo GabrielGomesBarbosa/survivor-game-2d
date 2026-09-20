@@ -1,0 +1,15 @@
+{
+  "imageWidth": 2880,
+  "imageHeight": 1536,
+  "cols": 3,
+  "rows": 1,
+  "frameWidth": 960,
+  "frameHeight": 1536,
+  "totalFrames": 3,
+  "frames": {
+    "inactive": 0,
+    "repairing": 1,
+    "completed": 2
+  },
+  "updatedAt": "2026-09-20T08:11:34.321Z"
+}

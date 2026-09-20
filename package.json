@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "convert-assets": "node scripts/convert-assets.js"
+    "convert-assets": "node scripts/convert-assets.js && node scripts/process-generator.js",
+    "convert-generator": "node scripts/process-generator.js"
   },
   "keywords": [],
   "author": "",
