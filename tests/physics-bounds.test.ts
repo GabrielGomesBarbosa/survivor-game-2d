@@ -5,7 +5,8 @@ import {
   resolveAntiPushVelocity,
   resolveSolidBodyCollision,
   calculateEffectiveSpeed,
-  evaluatePlayerMovementState
+  evaluatePlayerMovementState,
+  clampCircleAgainstNavGrid
 } from '../src/utils/gameLogic';
 
 describe('Physics & Navigation Bounds Logic (Pure Rules)', () => {
@@ -127,6 +128,61 @@ describe('Physics & Navigation Bounds Logic (Pure Rules)', () => {
     expect(resWall.killerPos.y).toBeGreaterThanOrEqual(80);
     // Player em repouso permanece intacto
     expect(resWall.playerPos.y).toBe(100);
+  });
+
+  it('strictly preserves killer position with delta = 0 under consecutive discrete taps (W micro-impulses) near obstacles', () => {
+    // Killer em repouso posicionado junto a um obstáculo superior (y = 150, parede em y <= 64)
+    const killer = { x: 500, y: 150, radius: 84.8, vx: 0, vy: 0 };
+    const initialKillerX = killer.x;
+    const initialKillerY = killer.y;
+
+    // Matriz de navegação simulada 30x40 com paredes na linha 0 (y <= 64)
+    const mockNavGrid: number[][] = Array.from({ length: ROWS }, (_, r) =>
+      Array.from({ length: COLS }, () => (r === 0 ? 1 : 0))
+    );
+
+    // Simulação de 25 toques rápidos (taps no 'W') consecutivos:
+    // Em cada toque, o Player ganha velocidade em direção ao Killer, colide,
+    // e no frame seguinte o jogador solta a tecla (velocidade zera enquanto ainda há proximidade).
+    for (let tap = 0; tap < 25; tap++) {
+      // 1. Frame de toque ativo: Player se move para cima (vy = -140) colidindo com o Killer
+      const activePlayer = { x: 500, y: 220, radius: 66.25, vx: 0, vy: -140 };
+      const resActive = resolveSolidBodyCollision(killer, activePlayer);
+
+      expect(resActive.hasCollision).toBe(true);
+      // As coordenadas do Killer DEVEM permanecer rigorosamente idênticas (delta = 0)
+      expect(resActive.killerPos.x).toBe(initialKillerX);
+      expect(resActive.killerPos.y).toBe(initialKillerY);
+      expect(Math.hypot(resActive.killerPos.x - initialKillerX, resActive.killerPos.y - initialKillerY)).toBe(0);
+
+      // 2. Frame de tecla solta (micro-impulsos onde ambos ficam com velocidade 0 sobrepostos)
+      const releasedPlayer = { x: resActive.playerPos.x, y: resActive.playerPos.y, radius: 66.25, vx: 0, vy: 0 };
+      const resReleased = resolveSolidBodyCollision(killer, releasedPlayer);
+
+      expect(resReleased.killerPos.x).toBe(initialKillerX);
+      expect(resReleased.killerPos.y).toBe(initialKillerY);
+      expect(Math.hypot(resReleased.killerPos.x - initialKillerX, resReleased.killerPos.y - initialKillerY)).toBe(0);
+
+      // 3. Verificação de contenção: Killer permanece 100% contido dentro da área navegável sem violar a parede
+      const clampCheck = clampCircleAgainstNavGrid(resActive.killerPos.x, resActive.killerPos.y, killer.radius, mockNavGrid);
+      expect(clampCheck.clamped).toBe(false); // Já está perfeitamente fora da parede
+      expect(clampCheck.y - killer.radius).toBeGreaterThanOrEqual(TILE_SIZE); // Borda superior estritamente >= 64px
+    }
+  });
+
+  it('guarantees hard edge clamping against walls: circle never penetrates or overlaps static tiles', () => {
+    // Matriz de navegação com linha 0 como parede sólida (y in [0, 64])
+    const mockNavGrid: number[][] = Array.from({ length: ROWS }, (_, r) =>
+      Array.from({ length: COLS }, () => (r === 0 ? 1 : 0))
+    );
+
+    // Entidade projetada para y = 80 com raio 50 (borda superior estaria em y = 30, dentro da parede [0, 64])
+    const clamped = clampCircleAgainstNavGrid(200, 80, 50, mockNavGrid);
+
+    expect(clamped.clamped).toBe(true);
+    // Coordenada Y foi ajustada para que o topo do círculo fique exatamente na borda externa (64 + 50 = 114)
+    expect(clamped.y).toBe(114);
+    expect(clamped.y - 50).toBe(64); // Borda exatamente tangenciando a parede, sem sobreposição
   });
 
   it('allows killer to slide tangentially without sticking', () => {

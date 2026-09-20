@@ -8,7 +8,7 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity, resolveSolidBodyCollision } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid } from '../utils/gameLogic';
 import { Player } from './Player';
 import { Generator } from './Generator';
 import { IKillerController } from '../controllers/KillerController';
@@ -21,6 +21,9 @@ export class Killer implements IKillerPawn {
   // Trava de integridade contra penetração em paredes
   public lastSafeX = 1280;
   public lastSafeY = 224;
+
+  // Configurações ativas de depuração
+  private settings: DebugSettings;
 
   // Ataque e colisão
   private lastAttackTime = 0;
@@ -49,6 +52,7 @@ export class Killer implements IKillerPawn {
     obstacles: Phaser.Physics.Arcade.StaticGroup
   ) {
     this.scene = scene;
+    this.settings = settings;
     this.easystar = easystar;
     this.navGrid = navGrid;
     this.walls = walls;
@@ -66,6 +70,8 @@ export class Killer implements IKillerPawn {
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     body.setDamping(false);
     body.setDrag(0, 0);
+    body.pushable = false;
+    body.setImmovable(true);
 
     this.updateHitbox(settings.hitboxRadius, settings.playerScale);
 
@@ -106,6 +112,8 @@ export class Killer implements IKillerPawn {
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     if (body) {
       body.setCircle(radius, offsetX, offsetY);
+      body.pushable = false;
+      body.setImmovable(true);
     }
   }
 
@@ -113,6 +121,7 @@ export class Killer implements IKillerPawn {
    * Atualização principal delegada ao controlador ativo.
    */
   public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
+    this.settings = settings;
     if (this.controller) {
       this.controller.update(delta, player, generators, settings);
     }
@@ -251,17 +260,17 @@ export class Killer implements IKillerPawn {
   public enforceWallBounds(navGrid: number[][]): void {
     if (!this.sprite || !this.sprite.body || navGrid.length === 0) return;
 
-    const col = Math.floor(this.sprite.x / TILE_SIZE);
-    const row = Math.floor(this.sprite.y / TILE_SIZE);
+    const playerRadius = (this.settings?.hitboxRadius ?? 53) * (this.settings?.playerScale ?? 1.25);
+    const killerRadius = playerRadius * 1.28;
+    const clampResult = clampCircleAgainstNavGrid(this.sprite.x, this.sprite.y, killerRadius, navGrid);
 
-    if (row >= 0 && row < ROWS && col >= 0 && col < COLS && navGrid[row]?.[col] === 0) {
-      this.lastSafeX = this.sprite.x;
-      this.lastSafeY = this.sprite.y;
-    } else {
-      this.sprite.setPosition(this.lastSafeX, this.lastSafeY);
+    if (clampResult.clamped) {
+      this.sprite.setPosition(clampResult.x, clampResult.y);
       this.sprite.setVelocity(0, 0);
       (this.sprite.body as Phaser.Physics.Arcade.Body).updateCenter();
     }
+    this.lastSafeX = this.sprite.x;
+    this.lastSafeY = this.sprite.y;
   }
 
   /**

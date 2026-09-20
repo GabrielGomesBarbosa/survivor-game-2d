@@ -221,8 +221,12 @@ export interface SolidCollisionResult {
 /**
  * Resolução pura de colisão física sólida não-elástica entre Killer e Player:
  * - Se a distância for menor que a soma dos raios (minDistance), detecta colisão.
- * - Imobilidade mútua rígida: uma entidade em repouso NUNCA é deslocada por empurrão alheio.
- * - Bloqueio estrito contra penetração em paredes estáticas do cenário.
+ * - Imobilidade Absoluta por Forças Externas (Corpos Inamovíveis Mútuos):
+ *   O contato físico com o Player NUNCA altera as coordenadas do Killer (delta = 0).
+ *   O Killer age como um obstáculo 100% rígido e inamovível perante o Player.
+ * - Se o Killer estiver se movendo contra o Player em repouso, o Player também não é empurrado
+ *   (o Killer para na borda de contato).
+ * - Nenhuma entidade é empurrada ou projetada através de paredes.
  * - Anula completamente a velocidade vetorial de aproximação ao longo da normal de colisão.
  */
 export function resolveSolidBodyCollision(
@@ -254,56 +258,40 @@ export function resolveSolidBodyCollision(
   const nx = dist > 0.001 ? dx / dist : 0;
   const ny = dist > 0.001 ? dy / dist : -1;
 
-  // Componentes de aproximação mútua ao longo da normal
+  // Componentes de velocidade de aproximação ao longo da normal
   const pSpeedTowards = pVel.x * nx + pVel.y * ny;
   const kSpeedTowards = kVel.x * (-nx) + kVel.y * (-ny);
 
   const isPlayerApproaching = pSpeedTowards > 0.01;
   const isKillerApproaching = kSpeedTowards > 0.01;
 
-  const isPlayerAtRest = !isPlayerApproaching && Math.hypot(pVel.x, pVel.y) < 1.0;
-  const isKillerAtRest = !isKillerApproaching && Math.hypot(kVel.x, kVel.y) < 1.0;
-
-  let dispK = 0;
-  let dispP = 0;
-
-  if (isKillerAtRest && !isPlayerAtRest) {
-    // Killer em repouso: Não é empurrado; apenas o Player recua
-    dispK = 0;
-    dispP = overlap;
-  } else if (isPlayerAtRest && !isKillerAtRest) {
-    // Player em repouso: Não é empurrado; apenas o Killer recua
-    dispK = overlap;
-    dispP = 0;
-  } else if (isPlayerApproaching && isKillerApproaching) {
-    // Ambos em aproximação: Repartição mútua sem transferência de empurrão
-    const total = pSpeedTowards + kSpeedTowards;
-    dispP = total > 0.001 ? overlap * (pSpeedTowards / total) : overlap * 0.5;
-    dispK = total > 0.001 ? overlap * (kSpeedTowards / total) : overlap * 0.5;
-  } else {
-    // Repouso mútuo ou contato estático: Separação simétrica 50/50
-    dispK = overlap * 0.5;
-    dispP = overlap * 0.5;
-  }
-
   let killerX = killer.x;
   let killerY = killer.y;
   let playerX = player.x;
   let playerY = player.y;
 
-  // Aplicação das posições com bloqueio estrito contra paredes
-  if (dispK > 0) {
-    const candidateKx = killer.x + nx * dispK;
-    const candidateKy = killer.y + ny * dispK;
+  // Regra Fundamental de Imobilidade Absoluta:
+  // 1. O Killer NUNCA pode ser deslocado por contato ou impulsos causados pelo Player (delta = 0).
+  // 2. Se apenas o Killer estiver se movendo contra o Player em repouso, o Killer recua
+  //    até a borda do Player, garantindo que o Player também não seja empurrado pelo mapa.
+  // 3. Se o Player estiver se movendo (ou toques rápidos/taps 'W' com velocidade alternando com zero),
+  //    o Killer é inabalável (killerPos = original) e o Player é repelido para trás ao longo de -n.
+  if (isKillerApproaching && !isPlayerApproaching) {
+    // Killer em aproximação ativa contra Player parado: Killer para na borda do Player
+    const candidateKx = killer.x + nx * overlap;
+    const candidateKy = killer.y + ny * overlap;
     if (!isWalkable || isWalkable(candidateKx, candidateKy)) {
       killerX = candidateKx;
       killerY = candidateKy;
     }
-  }
+  } else {
+    // Player se movendo (ou repouso mútuo/taps): Killer NUNCA se move (delta = 0).
+    // O Player recua até minDistance ao longo de -n
+    killerX = killer.x;
+    killerY = killer.y;
 
-  if (dispP > 0) {
-    const candidatePx = player.x - nx * dispP;
-    const candidatePy = player.y - ny * dispP;
+    const candidatePx = player.x - nx * overlap;
+    const candidatePy = player.y - ny * overlap;
     if (!isWalkable || isWalkable(candidatePx, candidatePy)) {
       playerX = candidatePx;
       playerY = candidatePy;
@@ -322,6 +310,116 @@ export function resolveSolidBodyCollision(
     killerVel: resKVel,
     playerVel: resPVel
   };
+}
+
+export interface CircleClampResult {
+  x: number;
+  y: number;
+  clamped: boolean;
+}
+
+/**
+ * Barreira impenetrável de borda (Hard Clamp contra Paredes e Obstáculos estáticos):
+ * Garante que nenhuma entidade física com hitbox circular de raio `radius` tenha parte
+ * do seu colisor sobreposto ou projetado para além das bordas sólidas do mapa.
+ *
+ * @param x Coordenada X central da entidade.
+ * @param y Coordenada Y central da entidade.
+ * @param radius Raio da hitbox circular.
+ * @param navGrid Matriz de navegação onde 1 = parede/sólido, 0 = livre.
+ * @param tileSize Tamanho do bloco em pixels (padrão: 64).
+ * @param worldWidth Largura total do mapa (padrão: 2560).
+ * @param worldHeight Altura total do mapa (padrão: 1920).
+ */
+export function clampCircleAgainstNavGrid(
+  x: number,
+  y: number,
+  radius: number,
+  navGrid: number[][],
+  tileSize: number = 64,
+  worldWidth: number = 2560,
+  worldHeight: number = 1920
+): CircleClampResult {
+  let curX = x;
+  let curY = y;
+  let clamped = false;
+
+  // 1. Clamping estrito contra o perímetro externo do mundo
+  const minWorldX = tileSize + radius;
+  const maxWorldX = worldWidth - tileSize - radius;
+  const minWorldY = tileSize + radius;
+  const maxWorldY = worldHeight - tileSize - radius;
+
+  if (curX < minWorldX) {
+    curX = minWorldX;
+    clamped = true;
+  } else if (curX > maxWorldX) {
+    curX = maxWorldX;
+    clamped = true;
+  }
+
+  if (curY < minWorldY) {
+    curY = minWorldY;
+    clamped = true;
+  } else if (curY > maxWorldY) {
+    curY = maxWorldY;
+    clamped = true;
+  }
+
+  if (!navGrid || navGrid.length === 0) {
+    return { x: curX, y: curY, clamped };
+  }
+
+  const rows = navGrid.length;
+  const cols = navGrid[0]?.length ?? 0;
+
+  // 2. Iterações de resolução contra caixas AABB de cada ladrilho sólido (1)
+  for (let iter = 0; iter < 2; iter++) {
+    const minCol = Math.max(0, Math.floor((curX - radius) / tileSize));
+    const maxCol = Math.min(cols - 1, Math.floor((curX + radius) / tileSize));
+    const minRow = Math.max(0, Math.floor((curY - radius) / tileSize));
+    const maxRow = Math.min(rows - 1, Math.floor((curY + radius) / tileSize));
+
+    for (let r = minRow; r <= maxRow; r++) {
+      for (let c = minCol; c <= maxCol; c++) {
+        if (navGrid[r]?.[c] === 1) {
+          const boxLeft = c * tileSize;
+          const boxRight = (c + 1) * tileSize;
+          const boxTop = r * tileSize;
+          const boxBottom = (r + 1) * tileSize;
+
+          const closestX = Math.max(boxLeft, Math.min(curX, boxRight));
+          const closestY = Math.max(boxTop, Math.min(curY, boxBottom));
+
+          const diffX = curX - closestX;
+          const diffY = curY - closestY;
+          const distSq = diffX * diffX + diffY * diffY;
+
+          if (distSq < radius * radius) {
+            clamped = true;
+            if (distSq > 0.0001) {
+              const dist = Math.sqrt(distSq);
+              const push = radius - dist;
+              curX += (diffX / dist) * push;
+              curY += (diffY / dist) * push;
+            } else {
+              const dLeft = curX - boxLeft;
+              const dRight = boxRight - curX;
+              const dTop = curY - boxTop;
+              const dBottom = boxBottom - curY;
+              const minD = Math.min(dLeft, dRight, dTop, dBottom);
+              if (minD === dLeft) curX = boxLeft - radius;
+              else if (minD === dRight) curX = boxRight + radius;
+              else if (minD === dTop) curY = boxTop - radius;
+              else curY = boxBottom + radius;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { x: curX, y: curY, clamped };
 }
 
 /**

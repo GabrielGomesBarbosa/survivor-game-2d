@@ -6,7 +6,7 @@
 
 import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
-import { evaluatePlayerMovementState } from '../utils/gameLogic';
+import { evaluatePlayerMovementState, clampCircleAgainstNavGrid } from '../utils/gameLogic';
 
 export class Player {
   public sprite: Phaser.Physics.Arcade.Sprite;
@@ -134,6 +134,7 @@ export class Player {
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     if (body) {
       body.setCircle(radius, offsetX, offsetY);
+      body.pushable = false;
     }
   }
 
@@ -309,17 +310,16 @@ export class Player {
   public enforceWallBounds(navGrid: number[][]): void {
     if (!this.sprite || !this.sprite.body || navGrid.length === 0) return;
 
-    const col = Math.floor(this.sprite.x / 64);
-    const row = Math.floor(this.sprite.y / 64);
+    const radius = (this.settings?.hitboxRadius ?? 53) * (this.settings?.playerScale ?? 1.25);
+    const clampResult = clampCircleAgainstNavGrid(this.sprite.x, this.sprite.y, radius, navGrid);
 
-    if (row >= 0 && row < 30 && col >= 0 && col < 40 && navGrid[row]?.[col] === 0) {
-      this.lastSafeX = this.sprite.x;
-      this.lastSafeY = this.sprite.y;
-    } else {
-      this.sprite.setPosition(this.lastSafeX, this.lastSafeY);
+    if (clampResult.clamped) {
+      this.sprite.setPosition(clampResult.x, clampResult.y);
       this.sprite.setVelocity(0, 0);
       (this.sprite.body as Phaser.Physics.Arcade.Body).updateCenter();
     }
+    this.lastSafeX = this.sprite.x;
+    this.lastSafeY = this.sprite.y;
   }
 
   /**
