@@ -12,7 +12,7 @@ import { SoundFX } from '../systems/SoundFX';
 import { TelemetryHUD } from '../ui/TelemetryHUD';
 import { RepairPromptUI } from '../ui/RepairPromptUI';
 import { DebugPanel } from '../ui/DebugPanel';
-import { calculateEdgeToEdgeDistance } from '../utils/gameLogic';
+import { calculateEdgeToEdgeDistance, formatCurrentTile } from '../utils/gameLogic';
 
 /**
  * @class SandboxScene
@@ -243,6 +243,7 @@ export class SandboxScene extends Phaser.Scene {
     mon.hitboxPixels = `${Math.round(this.debugPanel.settings.hitboxRadius * 2 * this.debugPanel.settings.playerScale)}px`;
     mon.playerX = this.player.x.toFixed(1);
     mon.playerY = this.player.y.toFixed(1);
+    mon.currentTile = formatCurrentTile(this.player.x, this.player.y);
     mon.killerState = this.killer.state;
     mon.killerDist = killerDistStr;
     mon.fps = fps;

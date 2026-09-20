@@ -201,7 +201,11 @@ export class DebugPanel {
     const monitorFolder = this.gui.addFolder('Telemetria em Tempo Real');
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'worldSize').name('Tamanho Mapa').listen().disable(),
-      'Dimensões totais da instalação em pixels (largura x altura).'
+      'Dimensões totais da instalação em pixels e blocos da grelha (largura x altura).'
+    );
+    this.attachTooltip(
+      monitorFolder.add(this.monitorState, 'currentTile').name('Tile Atual').listen().disable(),
+      'Coordenadas de coluna e linha [col, row] do ladrilho onde o Player se encontra no grid.'
     );
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'killerState').name('Estado Killer').listen().disable(),

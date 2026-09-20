@@ -7,7 +7,9 @@ import {
   evaluateKillerAiState,
   buildAiWeightedGrid,
   isRayClearOnNavGrid,
-  smoothPathNodes
+  smoothPathNodes,
+  calculateCurrentTile,
+  formatCurrentTile
 } from '../src/utils/gameLogic';
 
 describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', () => {
@@ -348,5 +350,43 @@ describe('Pathfinding Clearance & Raycast Smoothing (String Pulling)', () => {
     expect(smoothed[2]).toEqual({ x: 110, y: 100 });
   });
 });
+
+describe('Grid Telemetry & Tile Mapping (Math.floor / 64)', () => {
+  it('correctly maps origin and initial player spawn to grid tile coordinates', () => {
+    // Spawn padrão do Player: x = 1280, y = 960 -> 1280/64 = 20, 960/64 = 15
+    expect(calculateCurrentTile(1280, 960)).toEqual([20, 15]);
+    expect(formatCurrentTile(1280, 960)).toBe('[20, 15]');
+
+    // Origem do mapa (canto superior esquerdo)
+    expect(calculateCurrentTile(0, 0)).toEqual([0, 0]);
+    expect(formatCurrentTile(0, 0)).toBe('[0, 0]');
+  });
+
+  it('correctly floors sub-tile and fractional coordinates without rounding up prematurely', () => {
+    // Coordenada dentro do tile [0, 0]
+    expect(calculateCurrentTile(63.9, 63.9)).toEqual([0, 0]);
+    expect(formatCurrentTile(63.9, 63.9)).toBe('[0, 0]');
+
+    // Exatamente no limite do tile [1, 1]
+    expect(calculateCurrentTile(64.0, 64.0)).toEqual([1, 1]);
+    expect(formatCurrentTile(64.0, 64.0)).toBe('[1, 1]');
+
+    // Canto inferior direito do mundo 2560x1920 (cols 0..39, rows 0..29)
+    expect(calculateCurrentTile(2559.9, 1919.9)).toEqual([39, 29]);
+    expect(formatCurrentTile(2559.9, 1919.9)).toBe('[39, 29]');
+  });
+
+  it('accurately reports tile indices for key generator coordinates', () => {
+    // Gerador A (Usina): x = 2240, y = 960 -> [35, 15]
+    expect(formatCurrentTile(2240, 960)).toBe('[35, 15]');
+
+    // Gerador B (Enfermaria): x = 320, y = 960 -> [5, 15]
+    expect(formatCurrentTile(320, 960)).toBe('[5, 15]');
+
+    // Gerador C (Manutenção): x = 1280, y = 1664 -> [20, 26]
+    expect(formatCurrentTile(1280, 1664)).toBe('[20, 26]');
+  });
+});
+
 
 

@@ -81,6 +81,7 @@ export interface MonitorState {
   hitboxPixels: string;
   playerX: string;
   playerY: string;
+  currentTile: string;
   worldSize: string;
   killerState: string;
   killerDist: string;
@@ -96,7 +97,8 @@ export const DEFAULT_MONITOR_STATE: MonitorState = {
   hitboxPixels: '133px',
   playerX: '1280',
   playerY: '960',
-  worldSize: '2560 x 1920',
+  currentTile: '[20, 15]',
+  worldSize: `${WORLD_WIDTH} x ${WORLD_HEIGHT} px (${COLS} x ${ROWS} tiles)`,
   killerState: 'PATROL',
   killerDist: '0px',
   fps: 0

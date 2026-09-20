@@ -1050,4 +1050,28 @@ export class GeneratorPatrolManager {
   }
 }
 
+/**
+ * Calcula o índice de ladrilho [col, row] correspondente a uma coordenada contínua (x, y).
+ * @param x Coordenada horizontal em pixels.
+ * @param y Coordenada vertical em pixels.
+ * @param tileSize Tamanho do bloco em pixels (padrão: 64).
+ * @returns Tupla [col, row].
+ */
+export function calculateCurrentTile(x: number, y: number, tileSize: number = 64): [number, number] {
+  return [Math.floor(x / tileSize), Math.floor(y / tileSize)];
+}
+
+/**
+ * Formata a leitura do ladrilho atual para exibição na telemetria: "[col, row]".
+ * @param x Coordenada horizontal em pixels.
+ * @param y Coordenada vertical em pixels.
+ * @param tileSize Tamanho do bloco em pixels (padrão: 64).
+ * @returns String formatada "[col, row]".
+ */
+export function formatCurrentTile(x: number, y: number, tileSize: number = 64): string {
+  const [col, row] = calculateCurrentTile(x, y, tileSize);
+  return `[${col}, ${row}]`;
+}
+
+
 
