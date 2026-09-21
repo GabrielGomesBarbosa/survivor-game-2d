@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import survivorMeta from '../assets/survivor.json';
 import generatorMeta from '../assets/generator.json';
-import { WORLD_WIDTH, WORLD_HEIGHT, GENERATOR_DEFS } from '../config/constants';
+import { WORLD_WIDTH, WORLD_HEIGHT } from '../config/constants';
 import { MapBuilder, MapData } from '../map/MapBuilder';
 import { Player } from '../entities/Player';
 import { Killer } from '../entities/Killer';
@@ -12,7 +12,16 @@ import { SoundFX } from '../systems/SoundFX';
 import { TelemetryHUD } from '../ui/TelemetryHUD';
 import { RepairPromptUI } from '../ui/RepairPromptUI';
 import { DebugPanel } from '../ui/DebugPanel';
-import { calculateEdgeToEdgeDistance, formatCurrentTile } from '../utils/gameLogic';
+import {
+  calculateEdgeToEdgeDistance,
+  formatCurrentTile,
+  evaluateCameraPanState,
+  getMappedCandidatePool,
+  selectRandomCandidates,
+  candidateToGeneratorDef,
+  GeneratorSpawnCandidate
+} from '../utils/gameLogic';
+import { GeneratorPlacer } from '../editor/GeneratorPlacer';
 
 /**
  * @class SandboxScene
@@ -28,16 +37,21 @@ export class SandboxScene extends Phaser.Scene {
   private activeNearbyGen: Generator | null = null;
   private isRepairing = false;
   private repairStaggerTimer = 0;
+  private isMatchWon = false;
 
   // Systems and UI
   private skillCheck!: SkillCheckSystem;
   private repairPrompt!: RepairPromptUI;
   private telemetryHud!: TelemetryHUD;
   public debugPanel!: DebugPanel;
+  private generatorPlacer!: GeneratorPlacer;
 
-  // Inputs
+  // Inputs & Pan Navigation
   private keyE!: Phaser.Input.Keyboard.Key;
+  private keySpace!: Phaser.Input.Keyboard.Key;
   private activeKeys: Set<string> = new Set();
+  private isPanningCamera = false;
+
 
   constructor() {
     super('SandboxScene');
@@ -78,25 +92,70 @@ export class SandboxScene extends Phaser.Scene {
           this.telemetryHud.showNotification('🎯 Câmara centrada no Survivor!', false);
         }
       },
+      onTogglePlacerMode: (enabled) => {
+        this.generatorPlacer.setActive(enabled);
+      },
+      onTogglePlacerSnap: (snap) => {
+        this.generatorPlacer.snapToGrid = snap;
+        this.telemetryHud.showNotification(`🧲 Snap ao Grid: ${snap ? 'ATIVADO (32px)' : 'DESATIVADO (Livre)'}`, false);
+      },
+      onCyclePlacerRotation: () => {
+        this.generatorPlacer.cycleRotation();
+      },
+      onCopyCandidatesJson: () => {
+        this.generatorPlacer.copyCandidatesJson();
+      },
+      onClearCandidates: () => {
+        this.generatorPlacer.clearCandidates();
+      },
       onTestSkillCheck: () => this.skillCheck.startSkillCheck((res) => this.onSkillCheckResult(res)),
       onCompleteAllGenerators: () => {
         this.generators.forEach((g) => g.complete());
-        this.telemetryHud.showNotification('⚡ TODOS OS GERADORES RESTAURADOS (DEBUG)!', false);
+        const completed = this.generators.length;
+        const required = this.debugPanel.settings.generatorRequiredTarget;
+        if (completed >= required && !this.isMatchWon) {
+          this.isMatchWon = true;
+          SoundFX.playVictory();
+          this.cameras.main.flash(500, 40, 180, 255);
+          this.telemetryHud.showVictoryAlert(completed, required);
+        } else {
+          this.telemetryHud.showNotification('⚡ TODOS OS GERADORES RESTAURADOS (DEBUG)!', false);
+        }
       },
       onResetAllGenerators: () => {
+        this.isMatchWon = false;
         this.generators.forEach((g) => g.reset());
         this.telemetryHud.showNotification('🔄 Progresso de todos os geradores resetado!', false);
+      },
+      onShuffleGenerators: () => this.spawnRandomGenerators(),
+      onLoadFullPool: () => this.loadFullCandidatePool(),
+      onClearAllGenerators: () => this.clearAllGenerators(true),
+      onSurvivorActiveToggled: (active: boolean) => {
+        this.player.setActiveState(active);
+        if (!active && this.isRepairing) {
+          this.stopRepairing();
+        }
+        this.telemetryHud.showNotification(
+          active ? '👤 Survivor reativado no mapa!' : '👁️ Modo Espectador ativo: Survivor invisível e intangível.',
+          false
+        );
+      },
+      onGeneratorTargetsChanged: () => {
+        this.updateTelemetry();
       },
       onResetDefaults: () => {
         const s = this.debugPanel.settings;
         this.player.updateHitbox(s.hitboxRadius, s.playerScale);
         this.killer.updateHitbox(s.hitboxRadius, s.playerScale);
+        this.player.setActiveState(s.survivorActive);
         this.cameras.main.setZoom(s.cameraZoom);
         this.updateUiZoomScale(s.cameraZoom);
         this.physics.world.drawDebug = s.showPhysicsDebug;
         if (!s.freeCam) {
           this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
         }
+        this.generatorPlacer.setActive(s.editorMode);
+        this.generatorPlacer.snapToGrid = s.placerSnapToGrid;
       }
     });
 
@@ -116,10 +175,17 @@ export class SandboxScene extends Phaser.Scene {
     // 4. Entities & Systems
     this.player = new Player(this, 2560, 1920, this.debugPanel.settings);
     this.killer = new Killer(this, 2560, 736, this.debugPanel.settings, this.easystar, this.mapData.navGrid, this.mapData.walls, this.mapData.obstacles);
-    this.generators = GENERATOR_DEFS.map((def) => new Generator(this, def, this.mapData.obstacles));
+    this.generators = [];
     this.skillCheck = new SkillCheckSystem(this);
     this.repairPrompt = new RepairPromptUI(this);
     this.telemetryHud = new TelemetryHUD(this);
+    this.generatorPlacer = new GeneratorPlacer({
+      scene: this,
+      navGrid: this.mapData.navGrid,
+      onNotify: (msg, isAlert) => this.telemetryHud.showNotification(msg, isAlert)
+    });
+    this.generatorPlacer.setActive(this.debugPanel.settings.editorMode);
+    this.generatorPlacer.snapToGrid = this.debugPanel.settings.placerSnapToGrid;
 
     // 5. Physics Colliders & Anti-Tunneling Bounds
     [this.mapData.walls, this.mapData.obstacles].forEach((group) => {
@@ -145,19 +211,97 @@ export class SandboxScene extends Phaser.Scene {
     this.cameras.main.setZoom(this.debugPanel.settings.cameraZoom);
     this.updateUiZoomScale(this.debugPanel.settings.cameraZoom);
 
-    // 6.1 Navegação de Câmara Livre via Drag do Mouse (Pan)
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (this.debugPanel.settings.freeCam && pointer.isDown) {
-        const zoom = this.cameras.main.zoom;
-        const dx = (pointer.x - pointer.prevPosition.x) / zoom;
-        const dy = (pointer.y - pointer.prevPosition.y) / zoom;
-        this.cameras.main.scrollX -= dx;
-        this.cameras.main.scrollY -= dy;
+    // 6.1 Navegação de Câmara Livre via Drag do Mouse (Pan) e Posicionamento de Spawns
+    const executeCameraPan = (pointer: Phaser.Input.Pointer) => {
+      const zoom = this.cameras.main.zoom || 1.0;
+      const dx = (pointer.x - pointer.prevPosition.x) / zoom;
+      const dy = (pointer.y - pointer.prevPosition.y) / zoom;
+      this.cameras.main.scrollX -= dx;
+      this.cameras.main.scrollY -= dy;
+    };
+
+    const isMiddleButton = (pointer: Phaser.Input.Pointer): boolean => {
+      return Boolean(
+        pointer.middleButtonDown() ||
+        (pointer.buttons & 4) !== 0 ||
+        (pointer.isDown && pointer.button === 1)
+      );
+    };
+
+    const isLeftButton = (pointer: Phaser.Input.Pointer): boolean => {
+      return Boolean(
+        pointer.leftButtonDown() ||
+        (pointer.buttons & 1) !== 0 ||
+        (pointer.isDown && pointer.button === 0)
+      );
+    };
+
+    const isSpaceKeyDown = (): boolean => {
+      return Boolean(this.keySpace?.isDown || this.activeKeys.has('Space'));
+    };
+
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      const isSpace = isSpaceKeyDown();
+      const isMiddle = isMiddleButton(pointer);
+      const isLeft = isLeftButton(pointer);
+
+      const panState = evaluateCameraPanState(
+        isMiddle,
+        isSpace,
+        isLeft,
+        this.debugPanel.settings.freeCam,
+        Boolean(this.generatorPlacer?.isActive)
+      );
+
+      if (panState.shouldPan) {
+        this.isPanningCamera = true;
+        pointer.prevPosition.x = pointer.x;
+        pointer.prevPosition.y = pointer.y;
+        if (!this.debugPanel.settings.freeCam) {
+          this.debugPanel.settings.freeCam = true;
+          this.cameras.main.stopFollow();
+          this.debugPanel.saveSettingsToStorage();
+          this.telemetryHud.showNotification('📷 Câmara Livre (Pan) ativada!', false);
+        }
+        return;
+      }
+
+      // RMB: Remover candidato existente
+      if (pointer.rightButtonDown() && this.generatorPlacer?.isActive) {
+        this.generatorPlacer.handlePointerDown(pointer);
+        return;
+      }
+
+      // LMB: Posicionar gerador apenas se panState.canPlaceGenerator for verdadeiro
+      if (panState.canPlaceGenerator && this.generatorPlacer?.isActive) {
+        this.generatorPlacer.handlePointerDown(pointer);
       }
     });
 
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      const isSpace = isSpaceKeyDown();
+      const isMiddle = isMiddleButton(pointer);
+      const isLeft = isLeftButton(pointer);
+
+      const panState = evaluateCameraPanState(
+        isMiddle,
+        isSpace,
+        isLeft,
+        this.debugPanel.settings.freeCam,
+        Boolean(this.generatorPlacer?.isActive)
+      );
+
+      if (panState.shouldPan || (this.isPanningCamera && (isMiddle || (isSpace && isLeft)))) {
+        executeCameraPan(pointer);
+      }
+    });
+
+    this.input.on('pointerup', () => {
+      this.isPanningCamera = false;
+    });
+
     this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gameObjects: any, _deltaX: number, deltaY: number) => {
-      if (this.debugPanel.settings.freeCam) {
+      if (this.debugPanel.settings.freeCam || this.generatorPlacer?.isActive) {
         const step = deltaY > 0 ? -0.05 : 0.05;
         const newZoom = Phaser.Math.Clamp(this.cameras.main.zoom + step, 0.3, 1.5);
         this.cameras.main.setZoom(newZoom);
@@ -168,13 +312,30 @@ export class SandboxScene extends Phaser.Scene {
     });
 
     // 7. Inputs
-    if (this.input.keyboard) this.keyE = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
-    window.addEventListener('keydown', (e) => this.activeKeys.add(e.code), true);
+    if (this.input.keyboard) {
+      this.keyE = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+      this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    }
+    // Previne comportamento nativo de autoscroll do navegador com botão do meio (scroll click)
+    window.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+    window.addEventListener('auxclick', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+    // Previne scroll de página nativo ao segurar Espaço no navegador
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') e.preventDefault();
+      this.activeKeys.add(e.code);
+    }, true);
     window.addEventListener('keyup', (e) => this.activeKeys.delete(e.code), true);
     window.addEventListener('resize', () => this.scale.refresh());
   }
 
   update(_time: number, delta: number): void {
+    if (this.generatorPlacer?.isActive) {
+      this.generatorPlacer.update(this.input.activePointer);
+    }
     this.handleGeneratorInteraction(delta);
     this.player.update(delta, this.isRepairing, this.debugPanel.settings);
     this.killer.update(delta, this.player, this.generators.filter((g) => !g.isCompleted), this.debugPanel.settings);
@@ -188,6 +349,12 @@ export class SandboxScene extends Phaser.Scene {
    * Manages repair proximity prompt [E], progress increase, and key release logic
    */
   private handleGeneratorInteraction(delta: number): void {
+    if (!this.player.isActive || !this.debugPanel.settings.survivorActive) {
+      if (this.isRepairing) this.stopRepairing();
+      this.repairPrompt.hide();
+      return;
+    }
+
     if (this.repairStaggerTimer > 0) {
       this.repairStaggerTimer -= delta;
       this.repairPrompt.show('💥 SISTEMA EM CURTO-CIRCUITO...', 0, false, true);
@@ -224,12 +391,19 @@ export class SandboxScene extends Phaser.Scene {
       if (isComplete) {
         this.stopRepairing();
         const completed = this.generators.filter((g) => g.isCompleted).length;
-        this.telemetryHud.showNotification(
-          completed === this.generators.length
-            ? '🏆 TODOS OS 3 GERADORES FORAM RESTAURADOS!'
-            : `⚡ ${closestGen.name} restaurado! (${completed}/3)`,
-          false
-        );
+        const required = this.debugPanel.settings.generatorRequiredTarget;
+
+        if (completed >= required && !this.isMatchWon) {
+          this.isMatchWon = true;
+          SoundFX.playVictory();
+          this.cameras.main.flash(500, 40, 180, 255);
+          this.telemetryHud.showVictoryAlert(completed, required);
+        } else {
+          this.telemetryHud.showNotification(
+            `⚡ ${closestGen.name} restaurado! (${completed}/${required} - meta da partida)`,
+            false
+          );
+        }
       }
     } else {
       if (this.isRepairing) this.stopRepairing();
@@ -292,7 +466,9 @@ export class SandboxScene extends Phaser.Scene {
     mon.fps = fps;
 
     const completedCount = this.generators.filter((g) => g.isCompleted).length;
-    this.telemetryHud.update(fps, this.killer.state, killerDistStr, completedCount, this.generators.length);
+    const totalGens = this.generators.length;
+    const requiredGens = this.debugPanel?.settings.generatorRequiredTarget ?? 5;
+    this.telemetryHud.update(fps, this.killer.state, killerDistStr, completedCount, totalGens, requiredGens);
   }
 
   /**
@@ -305,6 +481,76 @@ export class SandboxScene extends Phaser.Scene {
     }
     if (this.repairPrompt) {
       this.repairPrompt.updateZoomScale(zoom);
+    }
+    if (this.generatorPlacer) {
+      this.generatorPlacer.updateZoomScale(zoom);
+    }
+  }
+
+  /**
+   * Instancia uma lista de candidatos como geradores funcionais ativos na cena.
+   */
+  public instantiateGeneratorsFromCandidates(candidates: GeneratorSpawnCandidate[]): void {
+    this.clearAllGenerators(false);
+    this.isMatchWon = false;
+    const zoom = this.cameras.main.zoom || 1.0;
+
+    candidates.forEach((cand, idx) => {
+      const def = candidateToGeneratorDef(cand, idx);
+      const gen = new Generator(this, def, this.mapData.obstacles);
+      gen.updateZoomScale(zoom);
+      this.generators.push(gen);
+    });
+
+    this.updateUiZoomScale(zoom);
+  }
+
+  /**
+   * Sorteia até N geradores a partir do pool de candidatos e os instancia no mapa.
+   */
+  public spawnRandomGenerators(count?: number): void {
+    this.isMatchWon = false;
+    const targetCount = count ?? (this.debugPanel?.settings.generatorTotalTarget || 8);
+    const pool = getMappedCandidatePool();
+    if (pool.length === 0) {
+      this.telemetryHud.showNotification('⚠️ Nenhum candidato a gerador disponível no pool.', true);
+      return;
+    }
+    const chosen = selectRandomCandidates(pool, targetCount);
+    this.instantiateGeneratorsFromCandidates(chosen);
+    this.telemetryHud.showNotification(`🎲 ${chosen.length} geradores sorteados e instanciados no mapa!`, false);
+  }
+
+  /**
+   * Carrega e instancia todos os candidatos cadastrados no pool (validação integral).
+   */
+  public loadFullCandidatePool(): void {
+    this.isMatchWon = false;
+    const pool = getMappedCandidatePool();
+    if (pool.length === 0) {
+      this.telemetryHud.showNotification('⚠️ Nenhum candidato a gerador disponível no pool.', true);
+      return;
+    }
+    this.instantiateGeneratorsFromCandidates(pool);
+    this.telemetryHud.showNotification(`📦 Pool completo (${pool.length} geradores) instanciado no mapa!`, false);
+  }
+
+  /**
+   * Remove e destrói todos os geradores ativos da cena, retornando o Killer para STANDBY.
+   */
+  public clearAllGenerators(notify: boolean = true): void {
+    this.isMatchWon = false;
+    if (this.isRepairing) {
+      this.stopRepairing();
+    }
+    this.activeNearbyGen = null;
+    this.repairPrompt.hide();
+
+    this.generators.forEach((g) => g.destroy());
+    this.generators = [];
+
+    if (notify) {
+      this.telemetryHud.showNotification('🧹 Todos os geradores foram removidos. Killer em STANDBY.', false);
     }
   }
 }

@@ -109,4 +109,27 @@ export class SoundFX {
       });
     } catch (_) {}
   }
+
+  /**
+   * Toca uma fanfarra harmônica festiva de vitória ao atingir a meta necessária de geradores.
+   */
+  static playVictory(): void {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    try {
+      [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((freq, i) => {
+        if (!ctx) return;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.09);
+        gain.gain.setValueAtTime(0.24, ctx.currentTime + i * 0.09);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.09 + 0.85);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.09);
+        osc.stop(ctx.currentTime + i * 0.09 + 0.85);
+      });
+    } catch (_) {}
+  }
 }

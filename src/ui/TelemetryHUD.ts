@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { formatGeneratorsHudText } from '../utils/gameLogic';
 
 /**
  * @class TelemetryHUD
@@ -96,19 +97,28 @@ export class TelemetryHUD {
   }
 
   /**
+   * Dispara a notificação de vitória da partida quando a meta de geradores é concluída.
+   */
+  public showVictoryAlert(completed: number, target: number): void {
+    this.showNotification(`🏆 VITÓRIA DOS SOBREVIVENTES! Meta de geradores atingida (${completed}/${target})!`, false);
+  }
+
+  /**
    * Updates real-time values in the top telemetry bar
    * @param fps Current actual frames per second
-   * @param killerState Current AI state (PATROL | CHASE)
+   * @param killerState Current AI state (PATROL | CHASE | STANDBY | DESATIVADO)
    * @param killerDist Formatted distance string (e.g. "240px")
    * @param completedGens Count of fully repaired generators
-   * @param totalGens Total number of generators in map (e.g. 3)
+   * @param totalGens Total number of generators in map
+   * @param requiredGens Meta de geradores necessários para a vitória da partida
    */
   public update(
     fps: number,
     killerState: string,
     killerDist: string,
     completedGens: number,
-    totalGens: number
+    totalGens: number,
+    requiredGens?: number
   ): void {
     // Re-verify DOM elements if not yet found
     if (!this.hudFpsVal) this.initDOMCache();
@@ -131,7 +141,7 @@ export class TelemetryHUD {
       this.hudKillerState.textContent = killerState;
       if (killerState === 'CHASE') {
         this.hudKillerState.className = 'hud-val state-chase';
-      } else if (killerState === 'DESATIVADO' || killerState === 'OFFLINE') {
+      } else if (killerState === 'DESATIVADO' || killerState === 'OFFLINE' || killerState === 'STANDBY') {
         this.hudKillerState.className = 'hud-val state-disabled';
       } else {
         this.hudKillerState.className = 'hud-val state-patrol';
@@ -143,8 +153,13 @@ export class TelemetryHUD {
     }
 
     if (this.hudGensVal) {
-      this.hudGensVal.textContent = `${completedGens}/${totalGens}`;
-      if (completedGens === totalGens) {
+      const target = requiredGens !== undefined ? requiredGens : totalGens;
+      this.hudGensVal.textContent = formatGeneratorsHudText(completedGens, totalGens, requiredGens);
+
+      if (totalGens === 0) {
+        this.hudGensVal.style.color = '#94a3b8';
+
+      } else if (completedGens >= target && target > 0) {
         this.hudGensVal.style.color = '#38bdf8';
       } else if (completedGens > 0) {
         this.hudGensVal.style.color = '#4ade80';

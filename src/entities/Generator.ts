@@ -268,4 +268,22 @@ export class Generator {
     this.setFrame(0);
     this.updateVisuals(false);
   }
+
+  /**
+   * Destrói todos os elementos visuais e colisores físicos do gerador.
+   */
+  public destroy(): void {
+    if (this.floorZone) {
+      this.floorZone.destroy();
+    }
+    if (this.solidBlock) {
+      this.solidBlock.destroy();
+    }
+    if (this.promptContainer) {
+      this.promptContainer.destroy();
+    }
+    if (this.container) {
+      this.container.destroy();
+    }
+  }
 }

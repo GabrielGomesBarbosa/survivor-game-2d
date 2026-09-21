@@ -14,9 +14,19 @@ export interface DebugPanelCallbacks {
   onPhysicsDebugToggled?: (show: boolean) => void;
   onCameraZoomChanged?: (zoom: number) => void;
   onFreeCamToggled?: (enabled: boolean) => void;
+  onTogglePlacerMode?: (enabled: boolean) => void;
+  onTogglePlacerSnap?: (snap: boolean) => void;
+  onCyclePlacerRotation?: () => void;
+  onCopyCandidatesJson?: () => void;
+  onClearCandidates?: () => void;
   onTestSkillCheck?: () => void;
   onCompleteAllGenerators?: () => void;
   onResetAllGenerators?: () => void;
+  onShuffleGenerators?: () => void;
+  onLoadFullPool?: () => void;
+  onClearAllGenerators?: () => void;
+  onSurvivorActiveToggled?: (active: boolean) => void;
+  onGeneratorTargetsChanged?: (total: number, required: number) => void;
   onResetDefaults?: () => void;
 }
 
@@ -58,6 +68,18 @@ export class DebugPanel {
   private buildFolders(): void {
     // 1. Velocidades & Movimento
     const speedsFolder = this.gui.addFolder('Velocidades & Movimento');
+    this.attachTooltip(
+      speedsFolder
+        .add(this.settings, 'survivorActive')
+        .name('Survivor Ativo')
+        .onChange((val: boolean) => {
+          this.settings.survivorActive = Boolean(val);
+          this.saveSettingsToStorage();
+          this.callbacks.onSurvivorActiveToggled?.(this.settings.survivorActive);
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Habilita ou desabilita o Survivor no mapa (Modo Espectador do Killer). Quando desmarcado, torna o Survivor invisível, desativa colisão física e faz a IA do Killer ignorá-lo.'
+    );
     this.attachTooltip(
       speedsFolder.add(this.settings, 'walkSpeed', 50, 400, 5).name('Walk Speed'),
       'Velocidade base de caminhada do Player em pixels/segundo (WASD normal).'
@@ -220,7 +242,7 @@ export class DebugPanel {
     );
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'killerState').name('Estado Killer').listen().disable(),
-      'Estado da máquina FSM do Killer: PATROL (patrulha), CHASE (perseguição) ou DESATIVADO (robô desligado).'
+      'Estado da máquina FSM do Killer: PATROL (patrulha), CHASE (perseguição), STANDBY (aguardando geradores) ou DESATIVADO (robô desligado).'
     );
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'killerDist').name('Dist. Killer').listen().disable(),
@@ -279,27 +301,107 @@ export class DebugPanel {
         .onChange(() => this.saveSettingsToStorage()),
       'Intervalo médio em segundos entre os testes de reação (Skill Checks) durante o conserto.'
     );
+    this.attachTooltip(
+      genFolder
+        .add(this.settings, 'generatorTotalTarget', 1, 16, 1)
+        .name('Total no Mapa')
+        .onChange((val: number) => {
+          this.settings.generatorTotalTarget = Number(val) || 8;
+          this.saveSettingsToStorage();
+          this.callbacks.onGeneratorTargetsChanged?.(this.settings.generatorTotalTarget, this.settings.generatorRequiredTarget);
+        }),
+      'Quantidade de geradores sorteados para instanciar no mapa (1 a 16).'
+    );
+    this.attachTooltip(
+      genFolder
+        .add(this.settings, 'generatorRequiredTarget', 1, 12, 1)
+        .name('Meta para Concluir')
+        .onChange((val: number) => {
+          this.settings.generatorRequiredTarget = Number(val) || 5;
+          this.saveSettingsToStorage();
+          this.callbacks.onGeneratorTargetsChanged?.(this.settings.generatorTotalTarget, this.settings.generatorRequiredTarget);
+        }),
+      'Meta de geradores necessários para acionar a vitória da partida.'
+    );
 
     const genActions = {
+      shuffleGenerators: () => this.callbacks.onShuffleGenerators?.(),
+      loadFullPool: () => this.callbacks.onLoadFullPool?.(),
+      clearAllGenerators: () => this.callbacks.onClearAllGenerators?.(),
       testSkillCheck: () => this.callbacks.onTestSkillCheck?.(),
       completeAll: () => this.callbacks.onCompleteAllGenerators?.(),
       resetAll: () => this.callbacks.onResetAllGenerators?.()
     };
 
     this.attachTooltip(
+      genFolder.add(genActions, 'shuffleGenerators').name('🎲 Sortear Geradores (Shuffle)'),
+      'Sorteia aleatoriamente a quantidade definida em "Total no Mapa" a partir do pool de candidatos e os instancia no mapa.'
+    );
+    this.attachTooltip(
+      genFolder.add(genActions, 'loadFullPool').name('📦 Carregar Pool Completo'),
+      'Instancia na cena todos os candidatos cadastrados no pool para validação de spawns.'
+    );
+    this.attachTooltip(
+      genFolder.add(genActions, 'clearAllGenerators').name('🧹 Limpar Todos do Mapa'),
+      'Remove e destrói todos os geradores ativos da cena, esvazia o mapa e coloca o Killer em STANDBY.'
+    );
+    this.attachTooltip(
       genFolder.add(genActions, 'testSkillCheck').name('🎯 Disparar Skill Check'),
       'Dispara imediatamente um evento de Skill Check (QTE com barra giratória e [Espaço]) para testes.'
     );
     this.attachTooltip(
       genFolder.add(genActions, 'completeAll').name('⚡ Concluir Todos'),
-      'Define todos os 3 geradores para 100% concluídos imediatamente.'
+      'Define todos os geradores ativos para 100% concluídos imediatamente.'
     );
     this.attachTooltip(
       genFolder.add(genActions, 'resetAll').name('🔄 Resetar Geradores'),
       'Reseta o progresso de todos os geradores para 0% e reativa o estado incompleto.'
     );
 
-    // 7. Botão de restaurar configurações padrão
+    // 7. Modo Editor de Spawns (DBD Builder)
+    const editorFolder = this.gui.addFolder('Modo Editor de Spawns');
+    this.attachTooltip(
+      editorFolder
+        .add(this.settings, 'editorMode')
+        .name('Ativar Modo Posicionamento')
+        .onChange((val: boolean) => {
+          this.settings.editorMode = Boolean(val);
+          this.callbacks.onTogglePlacerMode?.(this.settings.editorMode);
+        }),
+      'Ativa a ferramenta de posicionamento de geradores. Permite fixar novos pontos com LMB, remover com RMB e rotacionar com [R].'
+    );
+    this.attachTooltip(
+      editorFolder
+        .add(this.settings, 'placerSnapToGrid')
+        .name('Snap ao Grid (32px)')
+        .onChange((val: boolean) => {
+          this.settings.placerSnapToGrid = Boolean(val);
+          this.callbacks.onTogglePlacerSnap?.(this.settings.placerSnapToGrid);
+        }),
+      'Alinha a posição do holograma em múltiplos de 32px (meio-ladrilho). Desmarque para posicionamento contínuo livre.'
+    );
+
+    const editorActions = {
+      rotate: () => this.callbacks.onCyclePlacerRotation?.(),
+      copyJson: () => this.callbacks.onCopyCandidatesJson?.(),
+      clearCandidates: () => this.callbacks.onClearCandidates?.()
+    };
+
+    this.attachTooltip(
+      editorFolder.add(editorActions, 'rotate').name('🔄 Girar [R] (+90°)'),
+      'Gira a orientação do gerador em 90 graus (0°, 90°, 180°, 270°).'
+    );
+    this.attachTooltip(
+      editorFolder.add(editorActions, 'copyJson').name('📋 Copiar Candidatos (JSON)'),
+      'Copia a lista estruturada de candidatos para a área de transferência e imprime no console.'
+    );
+    this.attachTooltip(
+      editorFolder.add(editorActions, 'clearCandidates').name('🗑️ Limpar Candidatos Marcados'),
+      'Remove todos os marcadores de candidatos da cena e limpa os dados salvos no localStorage (horror2d_generator_candidates).'
+    );
+    editorFolder.open();
+
+    // 8. Botão de restaurar configurações padrão
     const actions = {
       resetDefaults: () => this.resetSettingsToDefaults()
     };
@@ -449,6 +551,8 @@ export class DebugPanel {
     this.saveSettingsToStorage();
     this.gui.controllersRecursive().forEach((c) => c.updateDisplay());
     this.callbacks.onFreeCamToggled?.(this.settings.freeCam);
+    this.callbacks.onSurvivorActiveToggled?.(this.settings.survivorActive);
+    this.callbacks.onGeneratorTargetsChanged?.(this.settings.generatorTotalTarget, this.settings.generatorRequiredTarget);
     this.callbacks.onResetDefaults?.();
   }
 

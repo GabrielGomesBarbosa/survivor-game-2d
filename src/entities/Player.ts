@@ -13,6 +13,7 @@ export class Player {
   public scene: Phaser.Scene;
 
   // Estado de movimentação e telemetria
+  public isActive = true;
   public isMoving = false;
   public isSprinting = false;
   public currentSpeed = 0;
@@ -138,6 +139,34 @@ export class Player {
   }
 
   /**
+   * Ativa ou desativa o Survivor no mapa (Modo Espectador do Killer).
+   * - Quando desativado (false): torna o sprite invisível, desativa colisão física Arcade e bloqueia inputs WASD.
+   * - Quando reativado (true): restaura a visibilidade, colisão física e controle do Survivor.
+   */
+  public setActiveState(active: boolean): void {
+    this.isActive = active;
+    this.sprite.setVisible(active);
+    const body = this.sprite.body as Phaser.Physics.Arcade.Body;
+    if (body) {
+      body.enable = active;
+    }
+    if (!active) {
+      this.sprite.setVelocity(0, 0);
+      this.isMoving = false;
+      this.isSprinting = false;
+      this.currentSpeed = 0;
+      this.effectiveSpeed = 0;
+      this.isInputMoving = false;
+      this.isSprintingInput = false;
+      this.inputDir = { x: 0, y: 0 };
+      if (this.sprite.anims.isPlaying) {
+        this.sprite.anims.stop();
+        this.sprite.setFrame(0);
+      }
+    }
+  }
+
+  /**
    * Atualização contínua por frame da movimentação, animação e rotação do jogador.
    * @param {number} delta - Tempo delta em milissegundos desde o último frame.
    * @param {boolean} isRepairing - True se o jogador estiver imobilizado reparando um gerador.
@@ -145,6 +174,19 @@ export class Player {
    */
   public update(delta: number, isRepairing: boolean, settings: DebugSettings): void {
     this.settings = settings;
+    if (settings.survivorActive !== undefined && settings.survivorActive !== this.isActive) {
+      this.setActiveState(settings.survivorActive);
+    }
+
+    if (!this.isActive) {
+      this.sprite.setVelocity(0, 0);
+      this.isMoving = false;
+      this.isSprinting = false;
+      this.currentSpeed = 0;
+      this.effectiveSpeed = 0;
+      return;
+    }
+
     this.handleMovement(isRepairing, settings);
     this.handleRotation(delta, settings);
   }
@@ -329,6 +371,16 @@ export class Player {
    *    ou continua a animação caso esteja deslizando/strafing pela parede ou em espaço livre.
    */
   public postUpdate(delta: number, navGrid: number[][]): void {
+    if (!this.isActive) {
+      this.isMoving = false;
+      this.isSprinting = false;
+      this.currentSpeed = 0;
+      this.effectiveSpeed = 0;
+      this.lastPositionX = this.sprite.x;
+      this.lastPositionY = this.sprite.y;
+      return;
+    }
+
     this.enforceWallBounds(navGrid);
 
     if (!this.isInputMoving) {

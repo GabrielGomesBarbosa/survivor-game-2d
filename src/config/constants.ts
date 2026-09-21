@@ -10,6 +10,7 @@ export const COLS = 80;
 export const ROWS = 60;
 
 export const STORAGE_KEY = 'horror_topdown_debug_settings';
+export const GENERATOR_CANDIDATES_STORAGE_KEY = 'horror2d_generator_candidates';
 
 export const GENERATOR_DEFS = [
   { id: 'gen-1', name: 'Gerador A', roomName: 'Ala Nordeste (Laboratório)', x: 4096, y: 768 },
@@ -43,6 +44,13 @@ export interface DebugSettings {
   // Generator & Skill Check Settings
   generatorRepairTime: number; // Tempo total para 0 a 100% em segundos (padrão: 12s)
   skillCheckFrequency: number; // Frequência média em segundos entre QTEs (padrão: 3s)
+  // Spawn Editor Settings
+  editorMode: boolean;
+  placerSnapToGrid: boolean;
+  // Survivor & Match Target Settings
+  survivorActive: boolean;
+  generatorTotalTarget: number;
+  generatorRequiredTarget: number;
 }
 
 /**
@@ -68,7 +76,12 @@ export const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   showAStarPath: true,
   killerAiEnabled: true,
   generatorRepairTime: 12,
-  skillCheckFrequency: 3
+  skillCheckFrequency: 3,
+  editorMode: false,
+  placerSnapToGrid: true,
+  survivorActive: true,
+  generatorTotalTarget: 8,
+  generatorRequiredTarget: 5
 };
 
 /**

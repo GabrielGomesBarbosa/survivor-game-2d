@@ -9,10 +9,10 @@ import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
 import { Player } from '../entities/Player';
 import { Generator } from '../entities/Generator';
-import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState } from '../utils/gameLogic';
+import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState, isPlayerDetectableByKiller } from '../utils/gameLogic';
 import { IKillerController } from './KillerController';
 
-export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO';
+export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO' | 'STANDBY';
 
 export interface IKillerPawn {
   x: number;
@@ -39,7 +39,7 @@ export interface IKillerPawn {
 
 export class KillerAIController implements IKillerController {
   private pawn: IKillerPawn;
-  public state: AIState = 'PATROL';
+  public state: AIState = 'STANDBY';
   public patrolManager: GeneratorPatrolManager;
 
   // Alvo e caminhos
@@ -73,34 +73,67 @@ export class KillerAIController implements IKillerController {
       return;
     }
 
-    this.state = evaluateKillerAiState(this.state, settings.killerAiEnabled) as AIState;
-
-    const distToPlayer = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, player.x, player.y);
-    const detectionRadius = settings.detectionRadius;
-    const loseRadius = detectionRadius * 1.5;
-
-    // 1. Prioridade Absoluta: Detecção do Jogador -> Transição para CHASE
-    if (distToPlayer <= detectionRadius) {
-      const hasLOS = this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, player.x, player.y);
-      if (hasLOS || distToPlayer <= 100) {
-        if (this.state !== 'CHASE') {
-          this.patrolManager.interruptInspection();
-          this.state = 'CHASE';
-          this.currentPath = [];
-          this.currentPathIndex = 0;
-          this.pathRecalcTimer = 300;
-        }
-      }
-    } else if (this.state === 'CHASE' && distToPlayer > loseRadius) {
-      // Perdeu o rastro do jogador -> Volta para PATROL no próximo gerador
-      this.state = 'PATROL';
+    const genCount = generators ? generators.length : 0;
+    if (genCount === 0) {
+      this.state = 'STANDBY';
       this.currentPath = [];
       this.currentPathIndex = 0;
+      this.pawn.stopMovement();
+      this.pawn.stopAnimation(0);
+      this.pawn.renderVisionGraphic(settings, { x: this.pawn.x, y: this.pawn.y }, false);
+      this.pawn.renderRouteGraphic(settings, [], 0, false, false, { x: this.pawn.x, y: this.pawn.y });
+      return;
+    }
+
+    const prevState = this.state;
+    this.state = evaluateKillerAiState(this.state, settings.killerAiEnabled, genCount) as AIState;
+    if (prevState === 'STANDBY' && this.state === 'PATROL') {
       this.advanceToNextPatrolGenerator(generators);
     }
 
+    const isPlayerDetectable = isPlayerDetectableByKiller(
+      settings.survivorActive ?? true,
+      player ? player.isActive !== false : false,
+      player && player.sprite ? player.sprite.visible : true
+    );
+
+    if (isPlayerDetectable) {
+      const distToPlayer = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, player.x, player.y);
+      const detectionRadius = settings.detectionRadius;
+      const loseRadius = detectionRadius * 1.5;
+
+      // 1. Prioridade Absoluta: Detecção do Jogador -> Transição para CHASE
+      if (distToPlayer <= detectionRadius) {
+        const hasLOS = this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, player.x, player.y);
+        if (hasLOS || distToPlayer <= 100) {
+          if (this.state !== 'CHASE') {
+            this.patrolManager.interruptInspection();
+            this.state = 'CHASE';
+            this.currentPath = [];
+            this.currentPathIndex = 0;
+            this.pathRecalcTimer = 300;
+          }
+        }
+      } else if (this.state === 'CHASE' && distToPlayer > loseRadius) {
+        // Perdeu o rastro do jogador -> Volta para PATROL no próximo gerador
+        this.state = 'PATROL';
+        this.currentPath = [];
+        this.currentPathIndex = 0;
+        this.advanceToNextPatrolGenerator(generators);
+      }
+    } else {
+      // Se o survivor foi desativado enquanto estava em perseguição, aborta perseguição e retoma patrulha
+      if (this.state === 'CHASE') {
+        this.state = 'PATROL';
+        this.currentPath = [];
+        this.currentPathIndex = 0;
+        this.advanceToNextPatrolGenerator(generators);
+      }
+    }
+
     // 2. Execução dos estados da FSM
-    if (this.state === 'CHASE') {
+    if (this.state === 'CHASE' && isPlayerDetectable) {
+      const distToPlayer = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, player.x, player.y);
       this.handleChaseState(delta, player, distToPlayer, settings);
     } else if (this.state === 'INSPECTING') {
       this.handleInspectingState(delta, generators);
@@ -109,18 +142,19 @@ export class KillerAIController implements IKillerController {
     }
 
     // 3. Renderização de depuração
+    const isChasing = this.state === 'CHASE' && isPlayerDetectable;
     this.pawn.renderVisionGraphic(
       settings,
-      this.state === 'CHASE' ? { x: player.x, y: player.y } : { x: this.patrolTarget.x, y: this.patrolTarget.y },
-      this.state === 'CHASE'
+      isChasing ? { x: player.x, y: player.y } : { x: this.patrolTarget.x, y: this.patrolTarget.y },
+      isChasing
     );
     this.pawn.renderRouteGraphic(
       settings,
       this.currentPath,
       this.currentPathIndex,
-      this.state === 'CHASE',
+      isChasing,
       this.hasDirectLOS,
-      this.state === 'CHASE' ? { x: player.x, y: player.y } : { x: this.patrolTarget.x, y: this.patrolTarget.y }
+      isChasing ? { x: player.x, y: player.y } : { x: this.patrolTarget.x, y: this.patrolTarget.y }
     );
   }
 
@@ -295,6 +329,13 @@ export class KillerAIController implements IKillerController {
    * Seleciona o próximo gerador da fila de patrulha e calcula rota A*.
    */
   public advanceToNextPatrolGenerator(generators: Generator[]): void {
+    if (!generators || generators.length === 0) {
+      this.state = 'STANDBY';
+      this.currentPath = [];
+      this.currentPathIndex = 0;
+      return;
+    }
+
     const candidateGens = (generators || []).map((g) => ({
       name: g.name,
       x: g.x,
@@ -330,7 +371,7 @@ export class KillerAIController implements IKillerController {
    * Alerta imediato de ruído (falha de Skill Check em gerador).
    */
   public alertToNoise(x: number, y: number): void {
-    if (this.state === 'DESATIVADO') return;
+    if (this.state === 'DESATIVADO' || this.state === 'STANDBY') return;
     this.patrolManager.interruptInspection();
     this.state = 'PATROL';
     this.patrolTarget.set(x, y);

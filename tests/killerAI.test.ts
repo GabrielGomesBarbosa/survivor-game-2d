@@ -223,6 +223,25 @@ describe('Killer Bot (IA Ativa) - State Transition & Offline Mode', () => {
     expect(evaluateKillerAiState('CHASE', true)).toBe('CHASE');
     expect(evaluateKillerAiState('INSPECTING', true)).toBe('INSPECTING');
   });
+
+  it('forces STANDBY state when activeGeneratorsCount is 0, even if killerAiEnabled is true', () => {
+    expect(evaluateKillerAiState('PATROL', true, 0)).toBe('STANDBY');
+    expect(evaluateKillerAiState('CHASE', true, 0)).toBe('STANDBY');
+    expect(evaluateKillerAiState('INSPECTING', true, 0)).toBe('STANDBY');
+    expect(evaluateKillerAiState('DESATIVADO', true, 0)).toBe('STANDBY');
+    expect(evaluateKillerAiState('STANDBY', true, 0)).toBe('STANDBY');
+  });
+
+  it('transitions from STANDBY to PATROL when at least 1 generator is active', () => {
+    expect(evaluateKillerAiState('STANDBY', true, 1)).toBe('PATROL');
+    expect(evaluateKillerAiState('STANDBY', true, 8)).toBe('PATROL');
+  });
+
+  it('still enforces DESATIVADO if killerAiEnabled is false regardless of generator count', () => {
+    expect(evaluateKillerAiState('STANDBY', false, 0)).toBe('DESATIVADO');
+    expect(evaluateKillerAiState('STANDBY', false, 5)).toBe('DESATIVADO');
+    expect(evaluateKillerAiState('PATROL', false, 5)).toBe('DESATIVADO');
+  });
 });
 
 describe('Pathfinding Clearance & Raycast Smoothing (String Pulling)', () => {

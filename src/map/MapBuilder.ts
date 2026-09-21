@@ -143,7 +143,7 @@ export class MapBuilder {
    * Constrói a planta baixa orgânica e assimétrica da instalação (80 colunas x 60 linhas).
    * Elimina cubículos repetitivos e cria alas temáticas autênticas com obstáculos para looping.
    */
-  private static buildOrganicFacilityGrid(): string[][] {
+  public static buildOrganicFacilityGrid(): string[][] {
     const grid: string[][] = Array.from({ length: ROWS }, () => new Array(COLS).fill('.'));
 
     // Helpers para traçado de paredes ortogonais e blocos estruturais
@@ -254,6 +254,11 @@ export class MapBuilder {
     // Palete maciço de estocagem elevada
     fillBox(7, 8, 18, 21);
 
+    // Alcova Apertada em 'U' (Nicho Técnico para Gerador de 1 Único Slot Livre):
+    // Parede direita em c = 7, r in [17..19] formando nicho estreito com parede esquerda c = 4 e fundo r = 20
+    // Abertura frontal de 2 blocos para acesso pelo Norte (cols 5..6 = 128px)
+    vWall(7, 17, 19);
+
     // 5. Ala Nordeste: Laboratório de Pesquisa & Sala de Controle (c in [53..75], r in [4..20])
     // Gerador A em c = 63..64, r = 11..12 | Centro da sala em c = 64, r = 12
     hWall(4, 53, 59);
@@ -360,27 +365,55 @@ export class MapBuilder {
     fillBox(44, 46, 44, 45); // Transformador Leste (2x3)
     fillBox(51, 52, 38, 41); // Barreira técnica de cabos (2x4)
 
-    // 9. Alocação dos Geradores Provisórios (2x2 tiles 'G')
-    // Gerador A: Ala Nordeste (Laboratório) - centro (4096, 768)
-    for (let r = 11; r <= 12; r++) {
-      for (let c = 63; c <= 64; c++) {
-        grid[r][c] = 'G';
-      }
-    }
+    // 9. Pátio Intermediário Oeste: Quebra de Visão & Estruturas de Looping (c in [6..26], r in [22..38])
+    // Elimina a zona morta à esquerda da Recepção Central
+    // Estrutura em 'L' Noroeste (Contêineres de Carga / Divisória Técnica):
+    hWall(25, 11, 16);
+    vWall(11, 25, 29);
 
-    // Gerador B: Ala Sudoeste (Enfermaria) - centro (1024, 3072)
-    for (let r = 47; r <= 48; r++) {
-      for (let c = 15; c <= 16; c++) {
-        grid[r][c] = 'G';
-      }
-    }
+    // Pilar Central Maciço de Looping (Torre de Ventilação e Suporte Estrutural - 3x3 tiles = 192x192px):
+    // Posicionado defronte à porta oeste da Recepção (r = 28..30, c = 18..20)
+    fillBox(28, 30, 18, 20);
 
-    // Gerador C: Ala Sudeste (Sala de Máquinas) - centro (4096, 3072)
-    for (let r = 47; r <= 48; r++) {
-      for (let c = 63; c <= 64; c++) {
-        grid[r][c] = 'G';
-      }
-    }
+    // Estrutura em 'T' Sudoeste (Racks de Triagem & Divisórias de Carga):
+    hWall(35, 10, 18);
+    vWall(14, 32, 35);
+
+    // Defletores de Linha de Visão Leste-Oeste:
+    vWall(25, 24, 26);
+    vWall(25, 32, 34);
+
+    // 10. Ala Leste: Anexo de Quarentena & Nicho Apertado de 1 Slot (c in [56..72], r in [24..36])
+    // Elimina a zona morta à direita da Recepção Central com sala técnica e alcova em 'U'
+    // Parede Norte do Anexo com abertura em c = 59..62 (conexão com Ala Nordeste):
+    hWall(24, 56, 58);
+    hWall(24, 63, 72);
+
+    // Parede Sul do Anexo com abertura em c = 59..62 (conexão com Ala Sudeste):
+    hWall(36, 56, 58);
+    hWall(36, 63, 72);
+
+    // Parede Oeste com abertura em r = 28..31 (defronte à porta leste da Recepção):
+    vWall(56, 24, 27);
+    vWall(56, 32, 36);
+
+    // Parede Leste com abertura em r = 29..32 (conexão com anel perimetral c = 76..78):
+    vWall(72, 24, 28);
+    vWall(72, 33, 36);
+
+    // Divisória Interna e Bancada de Looping no Anexo Leste:
+    hWall(30, 59, 62);
+    vWall(62, 27, 30);
+
+    // Alcova Estreita em 'U' (Nicho Técnico de 1 Único Slot Livre):
+    // Parede esquerda (Oeste): c = 66, r in [28..31]
+    // Parede direita (Leste): c = 69, r in [28..31]
+    // Parede de fundo (Sul): r = 31, c in [66..69]
+    // Interior livre: c in [67..68], r in [28..30] (128px de largura)
+    // Acesso frontal aberto pelo Norte em r = 27 (cols 67..68 = 2 blocos de passagem)
+    vWall(66, 28, 31);
+    vWall(69, 28, 31);
+    hWall(31, 66, 69);
 
     return grid;
   }
@@ -436,6 +469,33 @@ export class MapBuilder {
     const spawnRing = scene.add.circle(2560, 1920, 36);
     spawnRing.setStrokeStyle(2, 0x38bdf8, 0.4);
     spawnRing.setDepth(0.4);
+
+    // Rótulos de Salas e Corredores (Blueprint Watermark Text - Estilo Planta Baixa Técnica)
+    const roomLabels = [
+      { text: 'RECEPÇÃO CENTRAL', x: 2560, y: 1920 },
+      { text: 'ALA NOROESTE - ALMOXARIFADO', x: 1024, y: 768 },
+      { text: 'ALA NORDESTE - LABORATÓRIO', x: 4096, y: 768 },
+      { text: 'ALA SUDOESTE - ENFERMARIA', x: 1024, y: 3072 },
+      { text: 'ALA SUDESTE - CALDEIRAS', x: 4096, y: 3072 },
+      { text: 'CORREDOR NORTE / ANEL PERIMETRAL', x: 2560, y: 160 },
+      { text: 'PÁTIO EXTERNO OESTE', x: 960, y: 1920 },
+      { text: 'ALA SUL - MANUTENÇÃO', x: 2560, y: 3072 },
+      { text: 'ALA LESTE - QUARENTENA', x: 4200, y: 1920 },
+      { text: 'ALA NORTE - CONTENÇÃO', x: 2560, y: 736 }
+    ];
+
+    roomLabels.forEach((lbl) => {
+      const txt = scene.add.text(lbl.x, lbl.y, lbl.text, {
+        fontFamily: 'monospace',
+        fontSize: '20px',
+        fontStyle: 'bold',
+        color: '#38bdf8',
+        letterSpacing: 2
+      });
+      txt.setOrigin(0.5);
+      txt.setAlpha(0.35);
+      txt.setDepth(0.25);
+    });
   }
 }
 
