@@ -145,9 +145,13 @@ export class Killer implements IKillerPawn {
   /**
    * Encaminha sinal de ruído ao controlador.
    */
-  public alertToNoise(x: number, y: number): void {
+  public alertToNoise(
+    x: number,
+    y: number,
+    targetGen?: Generator | { name: string; x: number; y: number; rotation?: number }
+  ): void {
     if (this.controller) {
-      this.controller.alertToNoise(x, y);
+      this.controller.alertToNoise(x, y, targetGen);
     }
   }
 
@@ -299,6 +303,13 @@ export class Killer implements IKillerPawn {
    */
   public updateNavGrid(navGrid: number[][]): void {
     this.navGrid = navGrid;
+  }
+
+  /**
+   * Retorna a malha de navegação (navGrid) ativa do Killer.
+   */
+  public getNavGrid(): number[][] {
+    return this.navGrid;
   }
 
   /**

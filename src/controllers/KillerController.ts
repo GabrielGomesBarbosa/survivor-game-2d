@@ -17,7 +17,11 @@ export interface IKillerController {
   /**
    * Alerta de ruído sonoro (ex: falha de Skill Check em gerador).
    */
-  alertToNoise(x: number, y: number): void;
+  alertToNoise(
+    x: number,
+    y: number,
+    targetGen?: Generator | { name: string; x: number; y: number; rotation?: number }
+  ): void;
 
   /**
    * Retorna o identificador textual do estado ativo para a telemetria do HUD.

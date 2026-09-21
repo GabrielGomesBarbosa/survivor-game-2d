@@ -11,7 +11,8 @@ import {
   calculateCurrentTile,
   formatCurrentTile,
   getGeneratorOccupiedTiles,
-  updateNavGridWithGenerators
+  updateNavGridWithGenerators,
+  evaluatePatrolArrival
 } from '../src/utils/gameLogic';
 
 
@@ -71,17 +72,18 @@ describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', ()
     expect(target?.name).toBe('Gerador B (75%)');
   });
 
-  it('calculates stand-off waypoints outside the 76x88 solid collider but inside the 95px yellow interaction zone', () => {
+  it('calculates stand-off waypoints outside the solid collider but inside the 130px yellow interaction zone (110-115px)', () => {
     const gen = { x: 2240, y: 960 };
     const standOff = getGeneratorStandOffPoint(gen);
 
     const dist = Math.hypot(standOff.x - gen.x, standOff.y - gen.y);
 
-    // Deve estar dentro do raio amarelo de 95px
-    expect(dist).toBeLessThanOrEqual(95);
+    // Deve estar dentro do raio amarelo de 130px e na faixa de 110px a 115px
+    expect(dist).toBeLessThanOrEqual(130);
+    expect(dist).toBeGreaterThanOrEqual(110);
 
-    // Deve estar estritamente fora da caixa sólida de 76x88px (half-extents 38x44px)
-    const insideBox = Math.abs(standOff.x - gen.x) <= 38 && Math.abs(standOff.y - gen.y) <= 44;
+    // Deve estar estritamente fora da caixa sólida de 50x112px (half-extents 25x56px)
+    const insideBox = Math.abs(standOff.x - gen.x) <= 25 && Math.abs(standOff.y - gen.y) <= 56;
     expect(insideBox).toBe(false);
   });
 
@@ -167,6 +169,84 @@ describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', ()
     expect(roomTarget).not.toBeNull();
     expect(roomTarget?.type).toBe('room');
     expect(MAJOR_FACILITY_ROOMS.map((r) => r.name)).toContain(roomTarget?.name);
+  });
+});
+
+describe('alertToNoise Unfreeze & Resilient Arrival (DIAGNOSTICO_KILLER_FREEZE)', () => {
+  it('positions stand-off point safely at 112px (110-115px) outside solid collider', () => {
+    const gen = { name: 'Gerador Alpha', x: 2000, y: 2000, rotation: 0 };
+    const standOff = getGeneratorStandOffPoint(gen, { x: 1000, y: 1000 }, () => true, 112);
+
+    const distToCenter = Math.hypot(standOff.x - 2000, standOff.y - 2000);
+    expect(distToCenter).toBeCloseTo(112);
+    expect(standOff.x === 2000 && standOff.y === 2000).toBe(false);
+
+    // Standoff point must be outside solid block (half-extents 25x56)
+    const insideSolid = Math.abs(standOff.x - 2000) <= 25 && Math.abs(standOff.y - 2000) <= 56;
+    expect(insideSolid).toBe(false);
+
+    // Standoff point must be within the 130px interaction circle
+    expect(distToCenter).toBeLessThanOrEqual(130);
+  });
+
+  it('registerAlertDestination properly sets destination, marks lastVisitedGenerator, and interrupts inspection', () => {
+    const mgr = new GeneratorPatrolManager();
+    mgr.startInspection(2500);
+    expect(mgr.isInspecting).toBe(true);
+
+    const target = mgr.registerAlertDestination({ name: 'Gerador Explosão', x: 1500, y: 1500 });
+    expect(mgr.isInspecting).toBe(false);
+    expect(mgr.inspectTimer).toBe(0);
+    expect(mgr.currentDestination).toEqual(target);
+    expect(mgr.currentDestination?.name).toBe('Gerador Explosão');
+    expect(mgr.lastVisitedGenerator).toBe('Gerador Explosão');
+  });
+
+  it('ensures getNextDestination excludes the alerted generator to prevent re-selection loops', () => {
+    const mgr = new GeneratorPatrolManager();
+    const gens = [
+      { name: 'Gerador Explosão', x: 1500, y: 1500, progress: 80, isCompleted: false },
+      { name: 'Gerador Outro', x: 2500, y: 2500, progress: 0, isCompleted: false }
+    ];
+
+    // Simula alerta de ruído marcando o gerador afetado
+    mgr.registerAlertDestination(gens[0]);
+    expect(mgr.lastVisitedGenerator).toBe('Gerador Explosão');
+
+    // Ao terminar inspeção e pedir o próximo alvo, DEVE escolher o outro gerador
+    const nextTarget = mgr.getNextDestination(gens);
+    expect(nextTarget?.name).toBe('Gerador Outro');
+    expect(nextTarget?.name).not.toBe('Gerador Explosão');
+  });
+
+  describe('evaluatePatrolArrival', () => {
+    it('confirms arrival when Killer reaches stand-off waypoint (distToTarget <= 32)', () => {
+      expect(evaluatePatrolArrival(0, true, 112)).toBe(true);
+      expect(evaluatePatrolArrival(20, true, 112)).toBe(true);
+      expect(evaluatePatrolArrival(32, true, 112)).toBe(true);
+    });
+
+    it('confirms arrival when Killer is within interaction zone (distToGen <= 130) and adjacent to stand-off (distToTarget <= 55)', () => {
+      expect(evaluatePatrolArrival(40, true, 110)).toBe(true);
+      expect(evaluatePatrolArrival(55, true, 130)).toBe(true);
+      expect(evaluatePatrolArrival(55, true, 95)).toBe(true);
+    });
+
+    it('rejects arrival when Killer is too far from stand-off or outside interaction radius', () => {
+      // Too far from stand-off
+      expect(evaluatePatrolArrival(56, true, 100)).toBe(false);
+      expect(evaluatePatrolArrival(100, true, 100)).toBe(false);
+
+      // Outside interaction radius
+      expect(evaluatePatrolArrival(40, true, 131)).toBe(false);
+      expect(evaluatePatrolArrival(50, true, 200)).toBe(false);
+    });
+
+    it('evaluates room arrival threshold (distToTarget <= 40)', () => {
+      expect(evaluatePatrolArrival(30, false)).toBe(true);
+      expect(evaluatePatrolArrival(40, false)).toBe(true);
+      expect(evaluatePatrolArrival(41, false)).toBe(false);
+    });
   });
 });
 
@@ -487,6 +567,146 @@ describe('Generator Dynamic NavGrid Blocking & Hitbox Clearance', () => {
     expect(weighted[4][4]).toBe(0);
   });
 });
+
+describe('Generator Stand-off Line-of-Sight & Wall Clearance (CORREÇÃO CRÍTICA DE NAVEGAÇÃO)', () => {
+  const tileSize = 64;
+  const cols = 10;
+  const rows = 10;
+
+  // Cria matriz 10x10 preenchida com 0 (chão transitável)
+  const createEmptyGrid = () => Array.from({ length: rows }, () => Array(cols).fill(0));
+
+  it('rejects candidate stand-off point across a solid wall divider even if that point is closer to Killer', () => {
+    const grid = createEmptyGrid();
+    // Divisória sólida na linha 3 (y de 192 a 255) cobrindo as colunas 2 a 8
+    for (let c = 2; c <= 8; c++) {
+      grid[3][c] = 1;
+    }
+
+    // Gerador horizontal no cômodo ao sul da divisória (largura 112, altura 50):
+    // Topo em y = 260 (colado na parede sul da divisória sem sobreposição)
+    // gen.x = 5 * 64 + 32 = 352, gen.y = 260 + 25 = 285, rotation = 90
+    const gen = { x: 352, y: 285, rotation: 90 };
+    // Killer posicionado no corredor norte: col 5, row 1 (centro: 352, 96)
+    const killerPos = { x: 352, y: 96 };
+
+    // Candidato Norte fica em y = 285 - 112 = 173 (row 2, no corredor norte onde grid = 0)
+    // Sem validação de LoS, o candidato Norte seria escolhido por estar mais próximo do Killer (|173 - 96| = 77px)
+    const standOff = getGeneratorStandOffPoint(gen, killerPos, undefined, 112, grid, tileSize, cols, rows);
+
+    // Com validação de LoS, o raio até o candidato Norte é interceptado pela parede na row 3 (192 a 255)!
+    // Logo, o ponto escolhido NÃO pode estar no corredor norte (y < 256)
+    expect(standOff.y).toBeGreaterThanOrEqual(256);
+
+    // O ponto escolhido deve ser uma das faces livres no mesmo cômodo (Leste, Oeste ou Sul)
+    const validFaces = [
+      { x: gen.x + 112, y: gen.y }, // Leste
+      { x: gen.x - 112, y: gen.y }, // Oeste
+      { x: gen.x, y: gen.y + 112 }  // Sul
+    ];
+    const isOneOfValid = validFaces.some(
+      (vf) => Math.hypot(vf.x - standOff.x, vf.y - standOff.y) < 1
+    );
+    expect(isOneOfValid).toBe(true);
+
+    // A distância até o centro do gerador deve ser 112px
+    expect(Math.hypot(standOff.x - gen.x, standOff.y - gen.y)).toBeCloseTo(112);
+  });
+
+  it('does NOT block line of sight by the generator own footprint in navGrid', () => {
+    const baseGrid = createEmptyGrid();
+    const gen = { x: 5 * tileSize + 32, y: 5 * tileSize + 32, rotation: 0 };
+
+    // Marca os ladrilhos do próprio gerador no navGrid com 1
+    const gridWithGen = updateNavGridWithGenerators(baseGrid, [gen], tileSize);
+
+    // Killer posicionado ao Norte
+    const killerPos = { x: gen.x, y: gen.y - 300 };
+
+    // Nenhuma parede arquitetural no mapa
+    const standOff = getGeneratorStandOffPoint(gen, killerPos, undefined, 112, gridWithGen, tileSize, cols, rows);
+
+    // Como o Norte está livre de paredes arquiteturais, os próprios ladrilhos da máquina não bloqueiam o raio
+    expect(standOff.x).toBeCloseTo(gen.x);
+    expect(standOff.y).toBeCloseTo(gen.y - 112);
+  });
+
+  it('handles generator placed in a corner with 2 blocked faces', () => {
+    const grid = createEmptyGrid();
+    // Parede Norte (row 3) e Parede Oeste (col 3) formando um canto
+    for (let c = 3; c <= 7; c++) grid[3][c] = 1;
+    for (let r = 3; r <= 7; r++) grid[r][3] = 1;
+
+    // Gerador posicionado no canto interno (dentro do cômodo rows 4+, cols 4+)
+    // Vertical (50w x 112h, halfW = 25, halfH = 56):
+    // gen.x = 256 + 25 + 10 = 291, gen.y = 256 + 56 + 10 = 322
+    const gen = { x: 291, y: 322, rotation: 0 };
+
+    // Killer aproxima-se do noroeste (fora do cômodo)
+    const killerPos = { x: 0, y: 0 };
+
+    const standOff = getGeneratorStandOffPoint(gen, killerPos, undefined, 112, grid, tileSize, cols, rows);
+
+    // Norte (y = 210, row 3) e Oeste (x = 179, col 2 através da parede em col 3) estão bloqueados
+    // Apenas Sul e Leste estão desobstruídos
+    const isEast = Math.hypot(standOff.x - (gen.x + 112), standOff.y - gen.y) < 1;
+    const isSouth = Math.hypot(standOff.x - gen.x, standOff.y - (gen.y + 112)) < 1;
+    expect(isEast || isSouth).toBe(true);
+
+    // Nunca deve escolher Norte ou Oeste
+    expect(standOff.y < gen.y).toBe(false); // Não é Norte
+    expect(standOff.x < gen.x).toBe(false); // Não é Oeste
+  });
+
+  it('rejects candidate coordinates outside world boundaries', () => {
+    const grid = createEmptyGrid();
+    // Gerador colado na borda superior e esquerda: col 0, row 0
+    const gen = { x: 32, y: 32, rotation: 0 };
+
+    // standOffDist = 112 colocaria Norte em y = -80 e Oeste em x = -80
+    const standOff = getGeneratorStandOffPoint(gen, { x: 0, y: 0 }, undefined, 112, grid, tileSize, cols, rows);
+
+    // Deve escolher apenas candidatos dentro dos limites do mapa (Sul ou Leste)
+    expect(standOff.x).toBeGreaterThanOrEqual(0);
+    expect(standOff.y).toBeGreaterThanOrEqual(0);
+    expect(standOff.x).toBeLessThan(cols * tileSize);
+    expect(standOff.y).toBeLessThan(rows * tileSize);
+  });
+
+  it('rejects candidate if the candidate tile itself is a solid wall', () => {
+    const grid = createEmptyGrid();
+    // Gerador em col 5, row 5
+    const gen = { x: 5 * tileSize + 32, y: 5 * tileSize + 32, rotation: 0 };
+
+    // Parede exatamente onde ficaria o candidato Leste (col 7, row 5)
+    grid[5][7] = 1;
+
+    // Killer vindo do Leste
+    const killerPos = { x: 9 * tileSize, y: 5 * tileSize + 32 };
+
+    const standOff = getGeneratorStandOffPoint(gen, killerPos, undefined, 112, grid, tileSize, cols, rows);
+
+    // Leste não pode ser escolhido porque o ladrilho é uma parede sólida
+    expect(standOff.x).not.toBe(gen.x + 112);
+  });
+
+  it('safely falls back without throwing when surrounded on all sides', () => {
+    const grid = createEmptyGrid();
+    // Enclausurado por paredes nas 4 direções
+    grid[4][5] = 1; // Norte
+    grid[6][5] = 1; // Sul
+    grid[5][4] = 1; // Oeste
+    grid[5][6] = 1; // Leste
+
+    const gen = { x: 5 * tileSize + 32, y: 5 * tileSize + 32, rotation: 0 };
+    const standOff = getGeneratorStandOffPoint(gen, { x: 0, y: 0 }, undefined, 112, grid, tileSize, cols, rows);
+
+    expect(standOff).toBeDefined();
+    expect(typeof standOff.x).toBe('number');
+    expect(typeof standOff.y).toBe('number');
+  });
+});
+
 
 
 

@@ -455,7 +455,7 @@ export class SandboxScene extends Phaser.Scene {
         this.isRepairing = false;
         this.persistActiveGenerators();
         this.skillCheck.triggerNoiseAlert(this.activeNearbyGen.x, this.activeNearbyGen.y);
-        this.killer.alertToNoise(this.activeNearbyGen.x, this.activeNearbyGen.y);
+        this.killer.alertToNoise(this.activeNearbyGen.x, this.activeNearbyGen.y, this.activeNearbyGen);
         this.telemetryHud.showNotification('💥 O Assassino foi alertado da explosão do gerador!', true);
       } else {
         SoundFX.playExplosion();

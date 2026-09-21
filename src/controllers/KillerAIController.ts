@@ -9,7 +9,7 @@ import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
 import { Player } from '../entities/Player';
 import { Generator } from '../entities/Generator';
-import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState, isPlayerDetectableByKiller } from '../utils/gameLogic';
+import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState, isPlayerDetectableByKiller, evaluatePatrolArrival } from '../utils/gameLogic';
 import { IKillerController } from './KillerController';
 
 export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO' | 'STANDBY';
@@ -35,6 +35,7 @@ export interface IKillerPawn {
     hasDirectLOS: boolean,
     targetPos: { x: number; y: number }
   ): void;
+  getNavGrid?(): number[][];
 }
 
 export class KillerAIController implements IKillerController {
@@ -49,6 +50,7 @@ export class KillerAIController implements IKillerController {
   private pathRecalcTimer = 0;
   private hasDirectLOS = false;
   private baseInspectAngle = 0;
+  private lastKnownGenerators: Generator[] = [];
 
   constructor(pawn: IKillerPawn) {
     this.pawn = pawn;
@@ -64,6 +66,7 @@ export class KillerAIController implements IKillerController {
    * Atualização principal de IA por frame.
    */
   public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
+    this.lastKnownGenerators = generators || [];
     if (!settings.killerAiEnabled) {
       this.state = 'DESATIVADO';
       this.pawn.stopMovement();
@@ -268,9 +271,7 @@ export class KillerAIController implements IKillerController {
       : distToTarget;
 
     // Chegou ao ponto frontal do gerador (stand-off) ou ao centro do cômodo
-    const hasArrived = isTargetingGenerator
-      ? (distToTarget <= 28 || (distToGen <= 95 && distToTarget <= 44))
-      : (distToTarget <= 40);
+    const hasArrived = evaluatePatrolArrival(distToTarget, isTargetingGenerator, distToGen);
 
     if (hasArrived) {
       this.pawn.stopMovement();
@@ -354,11 +355,13 @@ export class KillerAIController implements IKillerController {
     if (nextDest) {
       if (nextDest.type === 'generator') {
         const matchingGen = generators.find((g) => g.name === nextDest.name);
+        const navGrid = this.pawn.getNavGrid ? this.pawn.getNavGrid() : undefined;
         const standOff = getGeneratorStandOffPoint(
           { x: nextDest.x, y: nextDest.y, rotation: matchingGen?.rotation ?? 0 },
           { x: this.pawn.x, y: this.pawn.y },
           (wx, wy) => this.pawn.isWalkableTile(wx, wy),
-          72
+          112,
+          navGrid
         );
         this.patrolTarget.set(standOff.x, standOff.y);
       } else {
@@ -377,14 +380,38 @@ export class KillerAIController implements IKillerController {
   /**
    * Alerta imediato de ruído (falha de Skill Check em gerador).
    */
-  public alertToNoise(x: number, y: number): void {
+  public alertToNoise(
+    x: number,
+    y: number,
+    targetGen?: Generator | { name: string; x: number; y: number; rotation?: number }
+  ): void {
     if (this.state === 'DESATIVADO' || this.state === 'STANDBY') return;
     this.patrolManager.interruptInspection();
     this.state = 'PATROL';
-    this.patrolTarget.set(x, y);
+
+    const gen =
+      targetGen ||
+      this.lastKnownGenerators.find((g) => Math.hypot(g.x - x, g.y - y) <= 130);
+
+    if (gen) {
+      const navGrid = this.pawn.getNavGrid ? this.pawn.getNavGrid() : undefined;
+      const standOff = getGeneratorStandOffPoint(
+        { x: gen.x, y: gen.y, rotation: gen.rotation ?? 0 },
+        { x: this.pawn.x, y: this.pawn.y },
+        (wx, wy) => this.pawn.isWalkableTile(wx, wy),
+        112,
+        navGrid
+      );
+      this.patrolTarget.set(standOff.x, standOff.y);
+      this.patrolManager.registerAlertDestination(gen);
+    } else {
+      this.patrolTarget.set(x, y);
+      this.patrolManager.registerAlertDestination({ name: 'Ruído Detectado', x, y });
+    }
+
     this.currentPath = [];
     this.currentPathIndex = 0;
-    this.pawn.calculatePath(this.pawn.x, this.pawn.y, x, y, (path) => {
+    this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
       this.currentPath = path;
       this.currentPathIndex = path.length > 1 ? 1 : 0;
     });

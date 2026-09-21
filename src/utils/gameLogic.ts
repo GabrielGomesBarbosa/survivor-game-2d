@@ -566,53 +566,6 @@ export function clampCircleAgainstNavGrid(
 }
 
 /**
- * Ponto de parada / aproximação segura (stand-off) para o Killer no entorno do gerador:
- * - Considera a rotação da máquina (vertical 50x112px ou horizontal 112x50px).
- * - Posicionado estritamente fora do colisor sólido da máquina (extents 25x56px ou 56x25px).
- * - Posicionado estritamente dentro da zona amarela de interação (130px).
- * - Seleciona a melhor coordenada transitável de acordo com o lado de aproximação do Killer.
- */
-export function getGeneratorStandOffPoint(
-  gen: { x: number; y: number; rotation?: number },
-  fromPos?: { x: number; y: number },
-  isWalkable?: (x: number, y: number) => boolean,
-  standOffDist: number = 72
-): { x: number; y: number } {
-  const normRot = (((gen.rotation ?? 0) % 360) + 360) % 360;
-  const isHorizontal = normRot === 90 || normRot === 270;
-  const halfW = (isHorizontal ? GENERATOR_HITBOX_HEIGHT : GENERATOR_HITBOX_WIDTH) / 2;
-  const halfH = (isHorizontal ? GENERATOR_HITBOX_WIDTH : GENERATOR_HITBOX_HEIGHT) / 2;
-
-  const candidates = [
-    { x: gen.x, y: gen.y - standOffDist }, // Norte
-    { x: gen.x, y: gen.y + standOffDist }, // Sul
-    { x: gen.x - standOffDist, y: gen.y }, // Oeste
-    { x: gen.x + standOffDist, y: gen.y }  // Leste
-  ];
-
-  const validCandidates = isWalkable
-    ? candidates.filter((c) => isWalkable(c.x, c.y))
-    : candidates;
-
-  const list = validCandidates.length > 0 ? validCandidates : candidates;
-
-  if (fromPos) {
-    let best = list[0];
-    let bestDist = Infinity;
-    for (const c of list) {
-      const d = Math.hypot(c.x - fromPos.x, c.y - fromPos.y);
-      if (d < bestDist) {
-        bestDist = d;
-        best = c;
-      }
-    }
-    return { x: best.x, y: best.y };
-  }
-
-  return { x: list[0].x, y: list[0].y };
-}
-
-/**
  * Calcula a lista de coordenadas discretas de ladrilhos [col, row] cobertos pela hitbox
  * de um gerador (50x112px ou 112x50px dependendo da rotação).
  */
@@ -649,6 +602,176 @@ export function getGeneratorOccupiedTiles(
   }
   return tiles;
 }
+
+/**
+ * Ponto de parada / aproximação segura (stand-off) para o Killer no entorno do gerador:
+ * - Considera a rotação da máquina (vertical 50x112px ou horizontal 112x50px).
+ * - Posicionado estritamente fora do colisor sólido da máquina (extents 25x56px ou 56x25px).
+ * - Posicionado estritamente dentro da zona amarela de interação (130px), calibrado para 112px (~100-115px).
+ * - Validação Estrita de Célula Livre: O ponto candidato deve estar nos limites do mapa e não pode ser parede sólida ('#' / 1).
+ * - Validação de Linha de Visão Direta (Line-of-Sight / Raycast entre Centro do Gerador e Stand-off Point):
+ *   Amostrado a cada 8px do centro da máquina até a coordenada candidata. Não pode atravessar nenhuma célula de parede sólida ('#' / 1).
+ *   Ladrilhos pertencentes à própria máquina (ownTiles) são desconsiderados no teste de parede para não bloquear a saída do raio.
+ * - Seleção: Escolhe a melhor face válida (com LoS livre e transitável) mais próxima de `fromPos`.
+ * - Fallback resiliente: Caso nenhuma face tenha visão perfeita, prioriza faces transitáveis ou a mais próxima.
+ */
+export function getGeneratorStandOffPoint(
+  gen: { x: number; y: number; rotation?: number },
+  fromPos?: { x: number; y: number },
+  isWalkable?: ((x: number, y: number) => boolean) | number[][],
+  standOffDist: number = 112,
+  navGrid?: number[][],
+  tileSize: number = 64,
+  cols: number = 80,
+  rows: number = 60
+): { x: number; y: number } {
+  let effectiveNavGrid = navGrid;
+  let effectiveIsWalkable: ((x: number, y: number) => boolean) | undefined = undefined;
+
+  if (Array.isArray(isWalkable)) {
+    effectiveNavGrid = isWalkable;
+  } else if (typeof isWalkable === 'function') {
+    effectiveIsWalkable = isWalkable;
+  }
+
+  const gridRows = effectiveNavGrid ? effectiveNavGrid.length : rows;
+  const gridCols = effectiveNavGrid && effectiveNavGrid[0] ? effectiveNavGrid[0].length : cols;
+  const worldWidth = gridCols * tileSize;
+  const worldHeight = gridRows * tileSize;
+
+  // Ladrilhos cobertos pela hitbox da própria máquina no navGrid
+  const ownTilesList = getGeneratorOccupiedTiles(gen.x, gen.y, gen.rotation ?? 0, tileSize, gridCols, gridRows);
+  const ownTiles = new Set(ownTilesList.map((t) => `${t.col},${t.row}`));
+
+  const candidates = [
+    { x: gen.x, y: gen.y - standOffDist }, // Norte
+    { x: gen.x, y: gen.y + standOffDist }, // Sul
+    { x: gen.x - standOffDist, y: gen.y }, // Oeste
+    { x: gen.x + standOffDist, y: gen.y }  // Leste
+  ];
+
+  const validCandidates: Array<{ x: number; y: number }> = [];
+
+  for (const c of candidates) {
+    // 1. Validação de limites do mundo
+    if (c.x < 0 || c.x >= worldWidth || c.y < 0 || c.y >= worldHeight) {
+      continue;
+    }
+
+    const candCol = Math.floor(c.x / tileSize);
+    const candRow = Math.floor(c.y / tileSize);
+
+    if (candCol < 0 || candCol >= gridCols || candRow < 0 || candRow >= gridRows) {
+      continue;
+    }
+
+    // 2. Validação por predicado de transitabilidade
+    if (effectiveIsWalkable && !effectiveIsWalkable(c.x, c.y)) {
+      continue;
+    }
+
+    // 3. Validação por malha navGrid
+    if (effectiveNavGrid) {
+      // Célula candidata deve ser piso transitável (0) e não pode ser parte da própria carcaça
+      if (effectiveNavGrid[candRow][candCol] === 1) {
+        continue;
+      }
+      if (ownTiles.has(`${candCol},${candRow}`)) {
+        continue;
+      }
+
+      // Validação de Linha de Visão Direta (Line-of-Sight Raycast)
+      // Amostragem em passos curtos (a cada 8px) do centro do gerador até a coordenada candidata
+      let losBlocked = false;
+      const numSteps = Math.max(1, Math.ceil(standOffDist / 8));
+      for (let i = 0; i <= numSteps; i++) {
+        const t = i / numSteps;
+        const sx = gen.x + (c.x - gen.x) * t;
+        const sy = gen.y + (c.y - gen.y) * t;
+        const sc = Math.floor(sx / tileSize);
+        const sr = Math.floor(sy / tileSize);
+
+        if (sr < 0 || sr >= gridRows || sc < 0 || sc >= gridCols) {
+          losBlocked = true;
+          break;
+        }
+
+        if (effectiveNavGrid[sr][sc] === 1) {
+          // Ignora os ladrilhos pertencentes à própria máquina
+          if (!ownTiles.has(`${sc},${sr}`)) {
+            losBlocked = true;
+            break;
+          }
+        }
+      }
+
+      if (losBlocked) {
+        continue;
+      }
+    }
+
+    validCandidates.push(c);
+  }
+
+  const selectClosest = (points: Array<{ x: number; y: number }>, target: { x: number; y: number }) => {
+    let best = points[0];
+    let bestDist = Infinity;
+    for (const pt of points) {
+      const d = Math.hypot(pt.x - target.x, pt.y - target.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = pt;
+      }
+    }
+    return { x: best.x, y: best.y };
+  };
+
+  // Se há candidatos com linha de visão totalmente desobstruída e célula livre
+  if (validCandidates.length > 0) {
+    if (fromPos) {
+      return selectClosest(validCandidates, fromPos);
+    }
+    return { x: validCandidates[0].x, y: validCandidates[0].y };
+  }
+
+  // Fallback 1: Candidatos com célula livre/transitável
+  const walkableCandidates = candidates.filter((c) => {
+    const cCol = Math.floor(c.x / tileSize);
+    const cRow = Math.floor(c.y / tileSize);
+    if (cCol < 0 || cCol >= gridCols || cRow < 0 || cRow >= gridRows) return false;
+    if (effectiveIsWalkable && !effectiveIsWalkable(c.x, c.y)) return false;
+    if (effectiveNavGrid && (effectiveNavGrid[cRow][cCol] === 1 || ownTiles.has(`${cCol},${cRow}`))) return false;
+    return true;
+  });
+
+  if (walkableCandidates.length > 0) {
+    if (fromPos) {
+      return selectClosest(walkableCandidates, fromPos);
+    }
+    return { x: walkableCandidates[0].x, y: walkableCandidates[0].y };
+  }
+
+  // Fallback 2: Candidatos dentro do mapa
+  const inBoundsCandidates = candidates.filter((c) => {
+    const cCol = Math.floor(c.x / tileSize);
+    const cRow = Math.floor(c.y / tileSize);
+    return cCol >= 0 && cCol < gridCols && cRow >= 0 && cRow < gridRows;
+  });
+
+  if (inBoundsCandidates.length > 0) {
+    if (fromPos) {
+      return selectClosest(inBoundsCandidates, fromPos);
+    }
+    return { x: inBoundsCandidates[0].x, y: inBoundsCandidates[0].y };
+  }
+
+  // Fallback final de segurança
+  if (fromPos) {
+    return selectClosest(candidates, fromPos);
+  }
+  return { x: candidates[0].x, y: candidates[0].y };
+}
+
 
 /**
  * Atualiza o navGrid combinando as paredes arquitetônicas base com os ladrilhos bloqueados por geradores ativos:
@@ -1143,6 +1266,42 @@ export class GeneratorPatrolManager {
     this.isInspecting = false;
     this.inspectTimer = 0;
   }
+
+  /**
+   * Registra um gerador como destino prioritário imediato decorrente de ruído/explosão,
+   * atualizando currentDestination e marcando lastVisitedGenerator para evitar loops na próxima rodada.
+   */
+  public registerAlertDestination(gen: { name: string; x: number; y: number }): PatrolTarget {
+    this.interruptInspection();
+    const target: PatrolTarget = {
+      name: gen.name,
+      x: gen.x,
+      y: gen.y,
+      type: 'generator'
+    };
+    this.currentDestination = target;
+    this.lastVisitedGenerator = gen.name;
+    return target;
+  }
+}
+
+/**
+ * Avalia se o Killer alcançou a tolerância de chegada ao alvo de patrulha:
+ * - Para geradores:
+ *   - Chegada confirmada se 'distToTarget <= 32' (alcançou o ponto livre de stand-off); OU
+ *   - se estiver dentro do raio de interação ('distToGen <= 130') e adjacente ao stand-off ('distToTarget <= 55').
+ * - Para salas principais:
+ *   - 'distToTarget <= 40' (centro do cômodo).
+ */
+export function evaluatePatrolArrival(
+  distToTarget: number,
+  isTargetingGenerator: boolean,
+  distToGen?: number
+): boolean {
+  if (isTargetingGenerator) {
+    return distToTarget <= 32 || ((distToGen !== undefined && distToGen <= 130) && distToTarget <= 55);
+  }
+  return distToTarget <= 40;
 }
 
 /**
