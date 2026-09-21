@@ -1,0 +1,146 @@
+[
+  {
+    "id": 1,
+    "name": "Gerador 1",
+    "roomName": "Almoxarifado",
+    "x": 1312,
+    "y": 800,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 2,
+    "name": "Gerador 2",
+    "roomName": "Nicho Noroeste",
+    "x": 384,
+    "y": 1214,
+    "rotation": 0,
+    "maxSurvivors": 1
+  },
+  {
+    "id": 3,
+    "name": "Gerador 3",
+    "roomName": "Contenção",
+    "x": 2560,
+    "y": 448,
+    "rotation": 90,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 4,
+    "name": "Gerador 4",
+    "roomName": "Laboratório",
+    "x": 4096,
+    "y": 768,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 5,
+    "name": "Gerador 5",
+    "roomName": "Sala de Controle",
+    "x": 4544,
+    "y": 448,
+    "rotation": 90,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 6,
+    "name": "Gerador 6",
+    "roomName": "Pátio Externo Oeste",
+    "x": 960,
+    "y": 1856,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 7,
+    "name": "Gerador 7",
+    "roomName": "Recepção Central",
+    "x": 2368,
+    "y": 1856,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 8,
+    "name": "Gerador 8",
+    "roomName": "Nicho Quarentena",
+    "x": 4352,
+    "y": 1924,
+    "rotation": 0,
+    "maxSurvivors": 1
+  },
+  {
+    "id": 9,
+    "name": "Gerador 9",
+    "roomName": "Enfermaria",
+    "x": 1024,
+    "y": 3072,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 10,
+    "name": "Gerador 10",
+    "roomName": "Bloco de Celas",
+    "x": 960,
+    "y": 2688,
+    "rotation": 90,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 11,
+    "name": "Gerador 11",
+    "roomName": "Manutenção",
+    "x": 2560,
+    "y": 3072,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 12,
+    "name": "Gerador 12",
+    "roomName": "Caldeiras",
+    "x": 4096,
+    "y": 3072,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 13,
+    "name": "Gerador 13",
+    "roomName": "Recepção Leste",
+    "x": 2976,
+    "y": 1952,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 14,
+    "name": "Gerador 14",
+    "roomName": "Corredor Norte",
+    "x": 1312,
+    "y": 160,
+    "rotation": 90,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 15,
+    "name": "Gerador 15",
+    "roomName": "Subestação Sul",
+    "x": 2656,
+    "y": 3104,
+    "rotation": 0,
+    "maxSurvivors": 4
+  },
+  {
+    "id": 16,
+    "name": "Gerador 16",
+    "roomName": "Maquinário Sudeste",
+    "x": 4128,
+    "y": 3424,
+    "rotation": 90,
+    "maxSurvivors": 4
+  }
+]
