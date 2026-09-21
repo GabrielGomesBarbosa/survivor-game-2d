@@ -23,6 +23,7 @@ export interface GeneratorDef {
   roomName: string;
   x: number;
   y: number;
+  rotation?: number;
 }
 
 export class Generator {
@@ -31,12 +32,13 @@ export class Generator {
   public roomName: string;
   public x: number;
   public y: number;
+  public rotation: number = 0;
 
   public progress = 0; // 0 a 100
   public isCompleted = false;
   public interactionRadius = GENERATOR_INTERACTION_RADIUS;
-  public readonly hitboxWidth = GENERATOR_HITBOX_WIDTH;
-  public readonly hitboxHeight = GENERATOR_HITBOX_HEIGHT;
+  public hitboxWidth: number;
+  public hitboxHeight: number;
 
   public container: Phaser.GameObjects.Container;
   public promptContainer: Phaser.GameObjects.Container;
@@ -61,6 +63,11 @@ export class Generator {
     this.roomName = def.roomName;
     this.x = def.x;
     this.y = def.y;
+    this.rotation = def.rotation ?? 0;
+
+    const isHorizontal = this.rotation === 90 || this.rotation === 270;
+    this.hitboxWidth = isHorizontal ? GENERATOR_HITBOX_HEIGHT : GENERATOR_HITBOX_WIDTH;
+    this.hitboxHeight = isHorizontal ? GENERATOR_HITBOX_WIDTH : GENERATOR_HITBOX_HEIGHT;
 
     // 1. Zona circular de interação no piso (130px)
     this.floorZone = scene.add.circle(def.x, def.y, this.interactionRadius);
@@ -68,15 +75,16 @@ export class Generator {
     this.floorZone.setFillStyle(0xffaa00, 0.04);
     this.floorZone.setDepth(1);
 
-    // 2. Colisor físico estático sólido para Player e Killer (50x112px, centrado em y - 4)
+    // 2. Colisor físico estático sólido para Player e Killer (50x112px ou 112x50px com rotação)
     this.solidBlock = scene.add.rectangle(
       def.x,
-      def.y + GENERATOR_HITBOX_OFFSET_Y,
+      def.y + (isHorizontal ? 0 : GENERATOR_HITBOX_OFFSET_Y),
       this.hitboxWidth,
       this.hitboxHeight,
       0x000000,
       0
     );
+    scene.physics.add.existing(this.solidBlock, true);
     obstaclesGroup.add(this.solidBlock);
     const solidBody = this.solidBlock.body as Phaser.Physics.Arcade.StaticBody;
     if (solidBody) {
@@ -87,12 +95,14 @@ export class Generator {
     this.container = scene.add.container(def.x, def.y);
     this.container.setDepth(3);
 
-    const shadow = scene.add.ellipse(0, 10, 80, 92, 0x06080e, 0.45);
+    const shadow = scene.add.ellipse(0, 10, isHorizontal ? 92 : 80, isHorizontal ? 80 : 92, 0x06080e, 0.45);
 
     // Sprite do Gerador carregado a partir de generator.png (Frame 0: Inativo / Danificado com LED vermelho)
     this.sprite = scene.add.sprite(0, -4, 'generator', 0);
     this.sprite.setScale(0.095);
     this.sprite.setOrigin(0.5, 0.5);
+    this.sprite.setAngle(this.rotation);
+
 
     // Mini indicador de status flutuante sobre o gerador (agrupado em promptContainer para compensação de zoom)
     this.promptContainer = scene.add.container(0, -64);

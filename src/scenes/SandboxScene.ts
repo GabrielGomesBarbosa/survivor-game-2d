@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import survivorMeta from '../assets/survivor.json';
 import generatorMeta from '../assets/generator.json';
-import { WORLD_WIDTH, WORLD_HEIGHT } from '../config/constants';
+import { WORLD_WIDTH, WORLD_HEIGHT, TILE_SIZE } from '../config/constants';
 import { MapBuilder, MapData } from '../map/MapBuilder';
 import { Player } from '../entities/Player';
 import { Killer } from '../entities/Killer';
@@ -19,9 +19,17 @@ import {
   getMappedCandidatePool,
   selectRandomCandidates,
   candidateToGeneratorDef,
-  GeneratorSpawnCandidate
+  updateNavGridWithGenerators,
+  buildAiWeightedGrid,
+  GeneratorSpawnCandidate,
+  ActiveGeneratorData,
+  saveActiveGeneratorsToStorage,
+  loadActiveGeneratorsFromStorage,
+  clearActiveGeneratorsFromStorage
 } from '../utils/gameLogic';
 import { GeneratorPlacer } from '../editor/GeneratorPlacer';
+
+
 
 /**
  * @class SandboxScene
@@ -111,6 +119,7 @@ export class SandboxScene extends Phaser.Scene {
       onTestSkillCheck: () => this.skillCheck.startSkillCheck((res) => this.onSkillCheckResult(res)),
       onCompleteAllGenerators: () => {
         this.generators.forEach((g) => g.complete());
+        this.persistActiveGenerators();
         const completed = this.generators.length;
         const required = this.debugPanel.settings.generatorRequiredTarget;
         if (completed >= required && !this.isMatchWon) {
@@ -125,11 +134,12 @@ export class SandboxScene extends Phaser.Scene {
       onResetAllGenerators: () => {
         this.isMatchWon = false;
         this.generators.forEach((g) => g.reset());
+        this.persistActiveGenerators();
         this.telemetryHud.showNotification('🔄 Progresso de todos os geradores resetado!', false);
       },
       onShuffleGenerators: () => this.spawnRandomGenerators(),
       onLoadFullPool: () => this.loadFullCandidatePool(),
-      onClearAllGenerators: () => this.clearAllGenerators(true),
+      onClearAllGenerators: () => this.clearAllGenerators(true, true),
       onSurvivorActiveToggled: (active: boolean) => {
         this.player.setActiveState(active);
         if (!active && this.isRepairing) {
@@ -330,6 +340,16 @@ export class SandboxScene extends Phaser.Scene {
     }, true);
     window.addEventListener('keyup', (e) => this.activeKeys.delete(e.code), true);
     window.addEventListener('resize', () => this.scale.refresh());
+
+    // 7. Restauração do Setup Ativo via LocalStorage (Resistência ao F5)
+    const savedActiveGens = loadActiveGeneratorsFromStorage();
+    if (savedActiveGens && savedActiveGens.length > 0) {
+      this.instantiateGeneratorsFromCandidates(savedActiveGens, false);
+      this.telemetryHud.showNotification(
+        `🔄 Setup restaurado do LocalStorage: ${savedActiveGens.length} geradores ativos recuperados.`,
+        false
+      );
+    }
   }
 
   update(_time: number, delta: number): void {
@@ -420,6 +440,7 @@ export class SandboxScene extends Phaser.Scene {
     if (this.skillCheck.isActive) {
       this.skillCheck.cancelSkillCheck(true);
     }
+    this.persistActiveGenerators();
   }
 
   private onSkillCheckResult(result: SkillCheckResult): void {
@@ -432,6 +453,7 @@ export class SandboxScene extends Phaser.Scene {
         this.activeNearbyGen.explode();
         this.repairStaggerTimer = 1400;
         this.isRepairing = false;
+        this.persistActiveGenerators();
         this.skillCheck.triggerNoiseAlert(this.activeNearbyGen.x, this.activeNearbyGen.y);
         this.killer.alertToNoise(this.activeNearbyGen.x, this.activeNearbyGen.y);
         this.telemetryHud.showNotification('💥 O Assassino foi alertado da explosão do gerador!', true);
@@ -488,21 +510,65 @@ export class SandboxScene extends Phaser.Scene {
   }
 
   /**
+   * Atualiza a malha de navegação (navGrid) e os pesos do EasyStar A*
+   * tratando os geradores ativos como obstáculos sólidos intransponíveis.
+   */
+  public refreshNavGridAndEasyStar(): void {
+    const activeGens = this.generators.map((g) => ({
+      x: g.x,
+      y: g.y,
+      rotation: g.rotation
+    }));
+
+    this.mapData.navGrid = updateNavGridWithGenerators(
+      this.mapData.baseNavGrid,
+      activeGens,
+      TILE_SIZE
+    );
+
+    const weightedGrid = buildAiWeightedGrid(this.mapData.navGrid);
+    this.easystar.setGrid(weightedGrid);
+    this.killer.updateNavGrid(this.mapData.navGrid);
+
+    if (this.generatorPlacer) {
+      this.generatorPlacer.navGrid = this.mapData.navGrid;
+    }
+  }
+
+  /**
    * Instancia uma lista de candidatos como geradores funcionais ativos na cena.
    */
-  public instantiateGeneratorsFromCandidates(candidates: GeneratorSpawnCandidate[]): void {
-    this.clearAllGenerators(false);
+  public instantiateGeneratorsFromCandidates(
+    candidates: Array<GeneratorSpawnCandidate | ActiveGeneratorData>,
+    persist: boolean = true
+  ): void {
+    this.clearAllGenerators(false, false);
     this.isMatchWon = false;
     const zoom = this.cameras.main.zoom || 1.0;
 
     candidates.forEach((cand, idx) => {
       const def = candidateToGeneratorDef(cand, idx);
       const gen = new Generator(this, def, this.mapData.obstacles);
+      if ('progress' in cand && typeof cand.progress === 'number') {
+        gen.progress = Math.min(100, Math.max(0, cand.progress));
+        if (gen.progress >= 100 || ('isCompleted' in cand && cand.isCompleted)) {
+          gen.isCompleted = true;
+          gen.setFrame(2);
+        } else if (gen.progress > 0) {
+          gen.setFrame(1);
+        }
+        gen.updateVisuals(false);
+      }
       gen.updateZoomScale(zoom);
       this.generators.push(gen);
     });
 
+    this.refreshNavGridAndEasyStar();
     this.updateUiZoomScale(zoom);
+
+    if (persist) {
+      this.persistActiveGenerators();
+    }
   }
 
   /**
@@ -538,7 +604,7 @@ export class SandboxScene extends Phaser.Scene {
   /**
    * Remove e destrói todos os geradores ativos da cena, retornando o Killer para STANDBY.
    */
-  public clearAllGenerators(notify: boolean = true): void {
+  public clearAllGenerators(notify: boolean = true, clearStorage: boolean = true): void {
     this.isMatchWon = false;
     if (this.isRepairing) {
       this.stopRepairing();
@@ -548,10 +614,34 @@ export class SandboxScene extends Phaser.Scene {
 
     this.generators.forEach((g) => g.destroy());
     this.generators = [];
+    this.refreshNavGridAndEasyStar();
+
+    if (clearStorage) {
+      clearActiveGeneratorsFromStorage();
+    }
 
     if (notify) {
       this.telemetryHud.showNotification('🧹 Todos os geradores foram removidos. Killer em STANDBY.', false);
     }
+  }
+
+  /**
+   * Serializa e persiste o estado dos geradores ativos atuais no localStorage
+   * para assegurar resiliência a recarregamento de página (F5).
+   */
+  public persistActiveGenerators(): void {
+    if (!this.generators) return;
+    const data: ActiveGeneratorData[] = this.generators.map((g) => ({
+      id: g.id,
+      name: g.name,
+      roomName: g.roomName,
+      x: g.x,
+      y: g.y,
+      rotation: g.rotation,
+      progress: Math.floor(g.progress),
+      isCompleted: g.isCompleted
+    }));
+    saveActiveGeneratorsToStorage(data);
   }
 }
 

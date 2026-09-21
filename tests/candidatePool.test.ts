@@ -11,7 +11,13 @@ import {
   GeneratorSpawnCandidate,
   evaluateKillerAiState,
   formatGeneratorsHudText,
-  isPlayerDetectableByKiller
+  isPlayerDetectableByKiller,
+  ACTIVE_GENERATORS_STORAGE_KEY,
+  ActiveGeneratorData,
+  parseActiveGeneratorsJson,
+  saveActiveGeneratorsToStorage,
+  loadActiveGeneratorsFromStorage,
+  clearActiveGeneratorsFromStorage
 } from '../src/utils/gameLogic';
 import { MapBuilder } from '../src/map/MapBuilder';
 
@@ -196,6 +202,256 @@ describe('Telemetry HUD Formatting & Spectator Mode Rules', () => {
 
     // Survivor invisible -> undetectable
     expect(isPlayerDetectableByKiller(true, true, false)).toBe(false);
+  });
+});
+
+describe('Active Generators Session Persistence (F5 Resistance)', () => {
+  const createMockStorage = () => {
+    const store = new Map<string, string>();
+    return {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+      clear: () => store.clear()
+    };
+  };
+
+  it('uses the strict key "horror2d_active_generators"', () => {
+    expect(ACTIVE_GENERATORS_STORAGE_KEY).toBe('horror2d_active_generators');
+  });
+
+  describe('parseActiveGeneratorsJson', () => {
+    it('returns empty array on invalid, non-array or null/undefined inputs', () => {
+      expect(parseActiveGeneratorsJson(null)).toEqual([]);
+      expect(parseActiveGeneratorsJson(undefined)).toEqual([]);
+      expect(parseActiveGeneratorsJson('')).toEqual([]);
+      expect(parseActiveGeneratorsJson('   ')).toEqual([]);
+      expect(parseActiveGeneratorsJson('not valid json')).toEqual([]);
+      expect(parseActiveGeneratorsJson('{"key": "value"}')).toEqual([]);
+      expect(parseActiveGeneratorsJson('123')).toEqual([]);
+    });
+
+    it('parses valid active generators and normalizes fields', () => {
+      const input = JSON.stringify([
+        {
+          id: 'gen-1',
+          name: 'Gerador A',
+          roomName: 'Recepção',
+          x: 1000,
+          y: 2000,
+          rotation: 90,
+          maxSurvivors: 2,
+          progress: 45,
+          isCompleted: false
+        },
+        {
+          id: 2,
+          name: 'Gerador B',
+          roomName: 'Laboratório',
+          x: 1500,
+          y: 800,
+          rotation: 0,
+          progress: 100,
+          isCompleted: true
+        }
+      ]);
+
+      const parsed = parseActiveGeneratorsJson(input);
+      expect(parsed).toHaveLength(2);
+      expect(parsed[0]).toEqual({
+        id: 'gen-1',
+        name: 'Gerador A',
+        roomName: 'Recepção',
+        x: 1000,
+        y: 2000,
+        rotation: 90,
+        maxSurvivors: 2,
+        progress: 45,
+        isCompleted: false
+      });
+      expect(parsed[1]).toEqual({
+        id: 2,
+        name: 'Gerador B',
+        roomName: 'Laboratório',
+        x: 1500,
+        y: 800,
+        rotation: 0,
+        maxSurvivors: 4,
+        progress: 100,
+        isCompleted: true
+      });
+    });
+
+    it('filters out invalid items without valid finite coordinates or id', () => {
+      const input = JSON.stringify([
+        { id: 'valid-1', x: 100, y: 200 },
+        { id: 'no-coords' },
+        { x: 100, y: 200 }, // missing id
+        { id: 'nan-coords', x: NaN, y: 200 },
+        { id: 'infinity-coords', x: 100, y: Infinity },
+        null,
+        'string-element'
+      ]);
+
+      const parsed = parseActiveGeneratorsJson(input);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].id).toBe('valid-1');
+      expect(parsed[0].x).toBe(100);
+      expect(parsed[0].y).toBe(200);
+      expect(parsed[0].rotation).toBe(0);
+      expect(parsed[0].progress).toBe(0);
+      expect(parsed[0].isCompleted).toBe(false);
+    });
+
+    it('marks isCompleted as true if progress >= 100 even if isCompleted was omitted', () => {
+      const input = JSON.stringify([
+        { id: 'gen-full', x: 500, y: 600, progress: 100 }
+      ]);
+      const parsed = parseActiveGeneratorsJson(input);
+      expect(parsed[0].isCompleted).toBe(true);
+    });
+  });
+
+  describe('Storage CRUD Operations', () => {
+    it('saves, loads, and clears active generators from mock storage', () => {
+      const mockStorage = createMockStorage();
+
+      // Initially empty
+      expect(loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage)).toEqual([]);
+
+      const activeGens: ActiveGeneratorData[] = [
+        {
+          id: 'gen-1',
+          name: 'Gerador Alfa',
+          roomName: 'Ala Noroeste',
+          x: 800,
+          y: 900,
+          rotation: 0,
+          maxSurvivors: 3,
+          progress: 50,
+          isCompleted: false
+        },
+        {
+          id: 'gen-2',
+          name: 'Gerador Beta',
+          roomName: 'Ala Nordeste',
+          x: 2400,
+          y: 900,
+          rotation: 180,
+          maxSurvivors: 4,
+          progress: 100,
+          isCompleted: true
+        }
+      ];
+
+      // Save
+      saveActiveGeneratorsToStorage(activeGens, ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+      const rawInStore = mockStorage.getItem(ACTIVE_GENERATORS_STORAGE_KEY);
+      expect(rawInStore).not.toBeNull();
+
+      // Load
+      const loaded = loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+      expect(loaded).toHaveLength(2);
+      expect(loaded[0].id).toBe('gen-1');
+      expect(loaded[0].progress).toBe(50);
+      expect(loaded[1].id).toBe('gen-2');
+      expect(loaded[1].isCompleted).toBe(true);
+
+      // Clear
+      clearActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+      expect(mockStorage.getItem(ACTIVE_GENERATORS_STORAGE_KEY)).toBeNull();
+      expect(loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage)).toEqual([]);
+    });
+
+    it('handles failing storage gracefully without crashing', () => {
+      const brokenStorage = {
+        getItem: () => { throw new Error('Storage disabled'); },
+        setItem: () => { throw new Error('Storage full'); },
+        removeItem: () => { throw new Error('Storage locked'); }
+      };
+
+      expect(() => {
+        loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, brokenStorage);
+      }).not.toThrow();
+      expect(loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, brokenStorage)).toEqual([]);
+
+      expect(() => {
+        saveActiveGeneratorsToStorage([], ACTIVE_GENERATORS_STORAGE_KEY, brokenStorage);
+      }).not.toThrow();
+
+      expect(() => {
+        clearActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, brokenStorage);
+      }).not.toThrow();
+    });
+  });
+
+  describe('candidateToGeneratorDef with ActiveGeneratorData', () => {
+    it('correctly maps ActiveGeneratorData to GeneratorDef', () => {
+      const activeData: ActiveGeneratorData = {
+        id: 'gen-4',
+        name: 'Gerador Sala Técnica',
+        roomName: 'Sala Técnica',
+        x: 1280,
+        y: 640,
+        rotation: 270,
+        progress: 75,
+        isCompleted: false
+      };
+
+      const def = candidateToGeneratorDef(activeData);
+      expect(def.id).toBe('gen-4');
+      expect(def.name).toBe('Gerador Sala Técnica');
+      expect(def.roomName).toBe('Sala Técnica');
+      expect(def.x).toBe(1280);
+      expect(def.y).toBe(640);
+      expect(def.rotation).toBe(270);
+    });
+  });
+
+  describe('Session Lifecycle Simulation', () => {
+    it('simulates page reload (F5) with active generators restoring patrol, and clear resetting to standby', () => {
+      const mockStorage = createMockStorage();
+
+      // 1. Initial boot with empty storage -> Killer stays in STANDBY
+      const initialSaved = loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+      expect(initialSaved).toHaveLength(0);
+      const killerStateAtStart = evaluateKillerAiState('STANDBY', true, initialSaved.length);
+      expect(killerStateAtStart).toBe('STANDBY');
+
+      // 2. User clicks Shuffle (8 generators active) -> persisted to localStorage
+      const candidates = selectRandomCandidates(DEFAULT_SPAWN_CANDIDATES, 8);
+      const activeGens: ActiveGeneratorData[] = candidates.map((c, i) => ({
+        id: `gen-${c.id}`,
+        name: `Gerador ${String.fromCharCode(65 + i)}`,
+        roomName: c.roomName || 'Complexo',
+        x: c.x,
+        y: c.y,
+        rotation: c.rotation ?? 0,
+        progress: 0,
+        isCompleted: false
+      }));
+      saveActiveGeneratorsToStorage(activeGens, ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+
+      // Killer transitions to PATROL
+      const killerStateAfterShuffle = evaluateKillerAiState('STANDBY', true, activeGens.length);
+      expect(killerStateAfterShuffle).toBe('PATROL');
+
+      // 3. Page Reload (F5) -> Read from storage
+      const reloadedGens = loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+      expect(reloadedGens).toHaveLength(8);
+      // Killer transitions out of STANDBY into PATROL on the very first frame
+      const killerStateOnReload = evaluateKillerAiState('STANDBY', true, reloadedGens.length);
+      expect(killerStateOnReload).toBe('PATROL');
+
+      // 4. User clicks "Limpar Todos do Mapa" -> Clear storage, active gens = 0
+      clearActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+      const clearedGens = loadActiveGeneratorsFromStorage(ACTIVE_GENERATORS_STORAGE_KEY, mockStorage);
+      expect(clearedGens).toHaveLength(0);
+
+      // Killer returns to STANDBY
+      const killerStateAfterClear = evaluateKillerAiState('PATROL', true, clearedGens.length);
+      expect(killerStateAfterClear).toBe('STANDBY');
+    });
   });
 });
 

@@ -567,16 +567,22 @@ export function clampCircleAgainstNavGrid(
 
 /**
  * Ponto de parada / aproximação segura (stand-off) para o Killer no entorno do gerador:
- * - Posicionado estritamente fora do colisor sólido da máquina (50x112px, extents 25x56px).
- * - Posicionado estritamente dentro da zona amarela de interação (130px, padrão ~72px).
+ * - Considera a rotação da máquina (vertical 50x112px ou horizontal 112x50px).
+ * - Posicionado estritamente fora do colisor sólido da máquina (extents 25x56px ou 56x25px).
+ * - Posicionado estritamente dentro da zona amarela de interação (130px).
  * - Seleciona a melhor coordenada transitável de acordo com o lado de aproximação do Killer.
  */
 export function getGeneratorStandOffPoint(
-  gen: { x: number; y: number },
+  gen: { x: number; y: number; rotation?: number },
   fromPos?: { x: number; y: number },
   isWalkable?: (x: number, y: number) => boolean,
   standOffDist: number = 72
 ): { x: number; y: number } {
+  const normRot = (((gen.rotation ?? 0) % 360) + 360) % 360;
+  const isHorizontal = normRot === 90 || normRot === 270;
+  const halfW = (isHorizontal ? GENERATOR_HITBOX_HEIGHT : GENERATOR_HITBOX_WIDTH) / 2;
+  const halfH = (isHorizontal ? GENERATOR_HITBOX_WIDTH : GENERATOR_HITBOX_HEIGHT) / 2;
+
   const candidates = [
     { x: gen.x, y: gen.y - standOffDist }, // Norte
     { x: gen.x, y: gen.y + standOffDist }, // Sul
@@ -600,11 +606,79 @@ export function getGeneratorStandOffPoint(
         best = c;
       }
     }
-    return best;
+    return { x: best.x, y: best.y };
   }
 
-  return list[0];
+  return { x: list[0].x, y: list[0].y };
 }
+
+/**
+ * Calcula a lista de coordenadas discretas de ladrilhos [col, row] cobertos pela hitbox
+ * de um gerador (50x112px ou 112x50px dependendo da rotação).
+ */
+export function getGeneratorOccupiedTiles(
+  genX: number,
+  genY: number,
+  rotation: number = 0,
+  tileSize: number = 64,
+  cols: number = 80,
+  rows: number = 60
+): Array<{ col: number; row: number }> {
+  const normRot = ((rotation % 360) + 360) % 360;
+  const isHorizontal = normRot === 90 || normRot === 270;
+  const width = isHorizontal ? GENERATOR_HITBOX_HEIGHT : GENERATOR_HITBOX_WIDTH;
+  const height = isHorizontal ? GENERATOR_HITBOX_WIDTH : GENERATOR_HITBOX_HEIGHT;
+
+  const halfW = width / 2;
+  const halfH = height / 2;
+  const left = genX - halfW;
+  const right = genX + halfW;
+  const top = genY - halfH;
+  const bottom = genY + halfH;
+
+  const minCol = Math.max(0, Math.floor((left + 1) / tileSize));
+  const maxCol = Math.min(cols - 1, Math.floor((right - 1) / tileSize));
+  const minRow = Math.max(0, Math.floor((top + 1) / tileSize));
+  const maxRow = Math.min(rows - 1, Math.floor((bottom - 1) / tileSize));
+
+  const tiles: Array<{ col: number; row: number }> = [];
+  for (let r = minRow; r <= maxRow; r++) {
+    for (let c = minCol; c <= maxCol; c++) {
+      tiles.push({ col: c, row: r });
+    }
+  }
+  return tiles;
+}
+
+/**
+ * Atualiza o navGrid combinando as paredes arquitetônicas base com os ladrilhos bloqueados por geradores ativos:
+ * 0 = piso transitável
+ * 1 = sólido intransponível (parede arquitetônica '#' ou gerador ativo)
+ */
+export function updateNavGridWithGenerators(
+  baseNavGrid: number[][],
+  generators: Array<{ x: number; y: number; rotation?: number }>,
+  tileSize: number = 64
+): number[][] {
+  const rows = baseNavGrid.length;
+  if (rows === 0) return [];
+  const cols = baseNavGrid[0].length;
+
+  // Clone o grid base defensivamente
+  const updatedGrid: number[][] = baseNavGrid.map((row) => [...row]);
+
+  generators.forEach((gen) => {
+    const tiles = getGeneratorOccupiedTiles(gen.x, gen.y, gen.rotation ?? 0, tileSize, cols, rows);
+    tiles.forEach(({ col, row }) => {
+      if (row >= 0 && row < rows && col >= 0 && col < cols) {
+        updatedGrid[row][col] = 1; // Bloqueado intransponível
+      }
+    });
+  });
+
+  return updatedGrid;
+}
+
 
 /**
  * Constrói a malha de busca ponderada para o EasyStar A*:
@@ -693,11 +767,20 @@ export function isRayClearOnNavGrid(
     const cx = x1 + dx * t;
     const cy = y1 + dy * t;
 
+    // Suaviza a margem nas extremidades (t = 0 e t = 1) para permitir que o raio comece e termine
+    // em nós válidos sem falso-positivo por proximidade imediata com paredes
+    const endpointFactor = Math.min(1, Math.sin(t * Math.PI) * 2.0);
+    const effMargin = margin * endpointFactor;
+
     const testPoints = [
-      { x: cx, y: cy },
-      { x: cx + nx * margin, y: cy + ny * margin },
-      { x: cx - nx * margin, y: cy - ny * margin }
+      { x: cx, y: cy }
     ];
+    if (effMargin > 1) {
+      testPoints.push(
+        { x: cx + nx * effMargin, y: cy + ny * effMargin },
+        { x: cx - nx * effMargin, y: cy - ny * effMargin }
+      );
+    }
 
     for (const pt of testPoints) {
       const col = Math.floor(pt.x / tileSize);
@@ -1367,6 +1450,108 @@ export function clearCandidatesFromStorage(
   }
 }
 
+export const ACTIVE_GENERATORS_STORAGE_KEY = 'horror2d_active_generators';
+
+/**
+ * Estrutura serializada para persistência de geradores ativos na sessão (resistência ao F5).
+ */
+export interface ActiveGeneratorData {
+  id: string | number;
+  name: string;
+  roomName: string;
+  x: number;
+  y: number;
+  rotation: number;
+  maxSurvivors?: number;
+  progress?: number;
+  isCompleted?: boolean;
+}
+
+/**
+ * Faz parse defensivo do JSON de geradores ativos recuperados do localStorage.
+ */
+export function parseActiveGeneratorsJson(rawJson: string | null | undefined): ActiveGeneratorData[] {
+  if (!rawJson) return [];
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (g): g is ActiveGeneratorData =>
+        Boolean(
+          g &&
+          (typeof g.id === 'string' || typeof g.id === 'number') &&
+          typeof g.x === 'number' &&
+          typeof g.y === 'number' &&
+          isFinite(g.x) &&
+          isFinite(g.y)
+        )
+    ).map((g) => ({
+      id: g.id,
+      name: g.name || `Gerador ${g.id}`,
+      roomName: g.roomName || 'Complexo Industrial',
+      x: g.x,
+      y: g.y,
+      rotation: typeof g.rotation === 'number' ? g.rotation : 0,
+      maxSurvivors: typeof g.maxSurvivors === 'number' ? g.maxSurvivors : 4,
+      progress: typeof g.progress === 'number' ? g.progress : 0,
+      isCompleted: Boolean(g.isCompleted || (typeof g.progress === 'number' && g.progress >= 100))
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Carrega a lista de geradores ativos atualmente configurados no localStorage.
+ */
+export function loadActiveGeneratorsFromStorage(
+  storageKey: string = ACTIVE_GENERATORS_STORAGE_KEY,
+  storage?: { getItem: (key: string) => string | null }
+): ActiveGeneratorData[] {
+  try {
+    const s = storage ?? (typeof window !== 'undefined' && window.localStorage ? window.localStorage : undefined);
+    if (!s) return [];
+    const raw = s.getItem(storageKey);
+    return parseActiveGeneratorsJson(raw);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Salva a lista de geradores ativos atualmente na cena no localStorage.
+ */
+export function saveActiveGeneratorsToStorage(
+  generators: ActiveGeneratorData[],
+  storageKey: string = ACTIVE_GENERATORS_STORAGE_KEY,
+  storage?: { setItem: (key: string, value: string) => void }
+): void {
+  try {
+    const s = storage ?? (typeof window !== 'undefined' && window.localStorage ? window.localStorage : undefined);
+    if (!s) return;
+    s.setItem(storageKey, JSON.stringify(generators));
+  } catch (e) {
+    console.warn('Erro ao salvar geradores ativos no localStorage:', e);
+  }
+}
+
+/**
+ * Remove a chave de geradores ativos do localStorage.
+ */
+export function clearActiveGeneratorsFromStorage(
+  storageKey: string = ACTIVE_GENERATORS_STORAGE_KEY,
+  storage?: { removeItem: (key: string) => void }
+): void {
+  try {
+    const s = storage ?? (typeof window !== 'undefined' && window.localStorage ? window.localStorage : undefined);
+    if (!s) return;
+    s.removeItem(storageKey);
+  } catch (e) {
+    console.warn('Erro ao limpar geradores ativos do localStorage:', e);
+  }
+}
+
+
 /**
  * Resultado da avaliação de prioridade de pan de câmera e posicionamento de geradores.
  */
@@ -1453,19 +1638,24 @@ export function selectRandomCandidates(
  * Converte um candidato a spawn em uma definição de gerador funcional (GeneratorDef).
  */
 export function candidateToGeneratorDef(
-  candidate: GeneratorSpawnCandidate,
+  candidate: GeneratorSpawnCandidate | ActiveGeneratorData,
   index?: number
-): { id: string; name: string; roomName: string; x: number; y: number } {
-  const genLetter = String.fromCharCode(65 + ((index !== undefined ? index : candidate.id - 1) % 26));
+): { id: string; name: string; roomName: string; x: number; y: number; rotation: number } {
+  const numId = typeof candidate.id === 'number'
+    ? candidate.id
+    : parseInt(String(candidate.id).replace(/\D/g, ''), 10) || 1;
+  const genLetter = String.fromCharCode(65 + ((index !== undefined ? index : numId - 1) % 26));
   const fallbackName = `Gerador ${genLetter}`;
   const isNumbered = Boolean(candidate.name && /^Gerador \d+$/i.test(candidate.name));
   const name = candidate.name && !isNumbered ? candidate.name : fallbackName;
+  const strId = String(candidate.id).startsWith('gen-') ? String(candidate.id) : `gen-${candidate.id}`;
   return {
-    id: `gen-${candidate.id}`,
+    id: strId,
     name,
     roomName: candidate.roomName || 'Complexo Industrial',
     x: candidate.x,
-    y: candidate.y
+    y: candidate.y,
+    rotation: candidate.rotation ?? 0
   };
 }
 

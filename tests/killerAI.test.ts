@@ -9,8 +9,11 @@ import {
   isRayClearOnNavGrid,
   smoothPathNodes,
   calculateCurrentTile,
-  formatCurrentTile
+  formatCurrentTile,
+  getGeneratorOccupiedTiles,
+  updateNavGridWithGenerators
 } from '../src/utils/gameLogic';
+
 
 describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', () => {
   let manager: GeneratorPatrolManager;
@@ -406,6 +409,85 @@ describe('Grid Telemetry & Tile Mapping (Math.floor / 64)', () => {
     expect(formatCurrentTile(4096, 3072)).toBe('[64, 48]');
   });
 });
+
+describe('Generator Dynamic NavGrid Blocking & Hitbox Clearance', () => {
+  it('computes correct occupied tiles for vertical generator (50x112px)', () => {
+    // Generator centered at (128, 128) - tile (2, 2)
+    // Vertical: width=50, height=112
+    // left = 128 - 25 = 103 (tile 1), right = 128 + 25 = 153 (tile 2)
+    // top = 128 - 56 = 72 (tile 1), bottom = 128 + 56 = 184 (tile 2)
+    const tiles = getGeneratorOccupiedTiles(128, 128, 0, 64, 10, 10);
+    expect(tiles.length).toBeGreaterThanOrEqual(1);
+    const hasTile22 = tiles.some((t) => t.col === 2 && t.row === 2);
+    expect(hasTile22).toBe(true);
+  });
+
+  it('computes correct occupied tiles for horizontal generator (112x50px with 90° rotation)', () => {
+    // Horizontal: width=112, height=50
+    // Centered at (192, 192) - tile (3, 3)
+    const tiles = getGeneratorOccupiedTiles(192, 192, 90, 64, 10, 10);
+    expect(tiles.length).toBeGreaterThanOrEqual(1);
+    const hasTile33 = tiles.some((t) => t.col === 3 && t.row === 3);
+    expect(hasTile33).toBe(true);
+  });
+
+  it('updateNavGridWithGenerators creates an immutable blocked grid leaving baseNavGrid intact', () => {
+    // 5x5 empty floor grid (all 0)
+    const baseNavGrid = [
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0]
+    ];
+
+    const gens = [{ x: 160, y: 160, rotation: 0 }]; // around tile [2, 2]
+    const updated = updateNavGridWithGenerators(baseNavGrid, gens, 64);
+
+    // baseNavGrid must remain purely 0
+    expect(baseNavGrid[2][2]).toBe(0);
+
+    // updated grid tile [2, 2] must be blocked (1)
+    expect(updated[2][2]).toBe(1);
+
+    // Clearing generators returns identical values to baseNavGrid
+    const cleared = updateNavGridWithGenerators(baseNavGrid, [], 64);
+    expect(cleared).toEqual(baseNavGrid);
+  });
+
+  it('buildAiWeightedGrid marks cells adjacent to active generators with cost 2 (weight 8)', () => {
+    // 5x5 grid with generator placed at center (2, 2)
+    const navGrid = [
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0],
+      [0, 0, 1, 0, 0], // Generator at (2, 2)
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0]
+    ];
+
+    const weighted = buildAiWeightedGrid(navGrid);
+
+    // The generator tile itself is 1
+    expect(weighted[2][2]).toBe(1);
+
+    // All 8 surrounding adjacent tiles receive cost 2 (elevated cost)
+    expect(weighted[1][1]).toBe(2);
+    expect(weighted[1][2]).toBe(2);
+    expect(weighted[1][3]).toBe(2);
+    expect(weighted[2][1]).toBe(2);
+    expect(weighted[2][3]).toBe(2);
+    expect(weighted[3][1]).toBe(2);
+    expect(weighted[3][2]).toBe(2);
+    expect(weighted[3][3]).toBe(2);
+
+    // Outer corner tiles far from the generator stay 0 (cost 1)
+    expect(weighted[0][0]).toBe(0);
+    expect(weighted[0][4]).toBe(0);
+    expect(weighted[4][0]).toBe(0);
+    expect(weighted[4][4]).toBe(0);
+  });
+});
+
 
 
 

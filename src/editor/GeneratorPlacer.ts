@@ -28,8 +28,12 @@ export interface GeneratorPlacerConfig {
 
 export class GeneratorPlacer {
   private scene: Phaser.Scene;
-  private navGrid: number[][];
+  public navGrid: number[][];
   private onNotify?: (message: string, isAlert?: boolean) => void;
+
+  public updateNavGrid(navGrid: number[][]): void {
+    this.navGrid = navGrid;
+  }
 
   public isActive: boolean = false;
   public currentRotation: number = 0; // 0°, 90°, 180°, 270°

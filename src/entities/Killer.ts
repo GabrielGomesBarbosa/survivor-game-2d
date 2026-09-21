@@ -8,8 +8,9 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid } from '../utils/gameLogic';
 import { Player } from './Player';
+
 import { Generator } from './Generator';
 import { IKillerController } from '../controllers/KillerController';
 import { KillerAIController, IKillerPawn } from '../controllers/KillerAIController';
@@ -294,6 +295,13 @@ export class Killer implements IKillerPawn {
   }
 
   /**
+   * Atualiza dinamicamente a malha navGrid ativa do Killer (com geradores e paredes).
+   */
+  public updateNavGrid(navGrid: number[][]): void {
+    this.navGrid = navGrid;
+  }
+
+  /**
    * Pós-processamento físico do Killer no POST_UPDATE.
    */
   public postUpdate(_delta: number, navGrid: number[][]): void {
@@ -301,9 +309,9 @@ export class Killer implements IKillerPawn {
   }
 
   /**
-   * Verifica linha de visão desobstruída (Line of Sight - LOS).
+   * Verifica linha de visão desobstruída (Line of Sight - LOS) considerando corpos sólidos e navGrid.
    */
-  public hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean {
+  public hasLineOfSight(x1: number, y1: number, x2: number, y2: number, clearance: number = 18): boolean {
     const dx = x2 - x1;
     const dy = y2 - y1;
     const dist = Math.sqrt(dx * dx + dy * dy);
@@ -311,12 +319,11 @@ export class Killer implements IKillerPawn {
 
     const pX = -dy / dist;
     const pY = dx / dist;
-    const margin = 34; // Folga lateral considerando o raio físico do Killer (~34-36px)
 
     const rays = [
       new Phaser.Geom.Line(x1, y1, x2, y2),
-      new Phaser.Geom.Line(x1 + pX * margin, y1 + pY * margin, x2 + pX * margin, y2 + pY * margin),
-      new Phaser.Geom.Line(x1 - pX * margin, y1 - pY * margin, x2 - pX * margin, y2 - pY * margin)
+      new Phaser.Geom.Line(x1 + pX * clearance, y1 + pY * clearance, x2 + pX * clearance, y2 + pY * clearance),
+      new Phaser.Geom.Line(x1 - pX * clearance, y1 - pY * clearance, x2 - pX * clearance, y2 - pY * clearance)
     ];
 
     const wallBodies = this.walls.getChildren() as Phaser.GameObjects.Rectangle[];
@@ -334,6 +341,13 @@ export class Killer implements IKillerPawn {
         }
       }
     }
+
+    if (this.navGrid && this.navGrid.length > 0) {
+      if (!isRayClearOnNavGrid(x1, y1, x2, y2, this.navGrid, clearance, TILE_SIZE)) {
+        return false;
+      }
+    }
+
     return true;
   }
 

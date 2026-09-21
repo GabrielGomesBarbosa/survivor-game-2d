@@ -13,6 +13,7 @@ import { buildAiWeightedGrid } from '../utils/gameLogic';
 export interface MapData {
   walls: Phaser.Physics.Arcade.StaticGroup;
   obstacles: Phaser.Physics.Arcade.StaticGroup;
+  baseNavGrid: number[][];
   navGrid: number[][];
   easystar: EasyStar.js;
   grid: string[][];
@@ -107,21 +108,21 @@ export class MapBuilder {
     }
 
     // 5. Configurar matriz de navegação e contenção (0 = transitável, 1 = parede arquitetônica)
-    // Os geradores têm colisão física gerenciada exclusivamente pelo grupo de obstáculos Arcade
-    const navGrid: number[][] = [];
+    const baseNavGrid: number[][] = [];
     for (let r = 0; r < ROWS; r++) {
-      navGrid[r] = new Array(COLS);
+      baseNavGrid[r] = new Array(COLS);
       for (let c = 0; c < COLS; c++) {
-        navGrid[r][c] = (grid[r][c] === '#') ? 1 : 0;
+        baseNavGrid[r][c] = (grid[r][c] === '#') ? 1 : 0;
       }
     }
+    const navGrid: number[][] = baseNavGrid.map((row) => [...row]);
 
     const weightedGrid = buildAiWeightedGrid(navGrid);
     const easystar = new EasyStar.js();
     easystar.setGrid(weightedGrid);
     easystar.setAcceptableTiles([0, 2]);
     easystar.setTileCost(0, 1);
-    easystar.setTileCost(2, 4);
+    easystar.setTileCost(2, 8); // Custo elevado (8) em células adjacentes a paredes e geradores para folga (clearance)
     easystar.enableDiagonals();
     (easystar as any).disableCornerCutting?.();
     (easystar as any).enableSync?.();
@@ -133,6 +134,7 @@ export class MapBuilder {
     return {
       walls,
       obstacles,
+      baseNavGrid,
       navGrid,
       easystar,
       grid

@@ -267,16 +267,22 @@ export class KillerAIController implements IKillerController {
       ? Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, currentDest.x, currentDest.y)
       : distToTarget;
 
-    const arrivalThreshold = isTargetingGenerator ? (settings.inspectionDistance ?? 110) : 45;
+    // Chegou ao ponto frontal do gerador (stand-off) ou ao centro do cômodo
+    const hasArrived = isTargetingGenerator
+      ? (distToTarget <= 28 || (distToGen <= 95 && distToTarget <= 44))
+      : (distToTarget <= 40);
 
-    // Chegou a uma distância segura do gerador (ou ao ponto stand-off)
-    if (distToGen <= arrivalThreshold || distToTarget <= 36) {
+    if (hasArrived) {
       this.pawn.stopMovement();
       this.pawn.stopAnimation(0);
 
       // Inicia inspeção com tempo configurável (inspectionTime, padrão: 2.5s)
       this.state = 'INSPECTING';
-      this.baseInspectAngle = this.pawn.rotation;
+      if (isTargetingGenerator && currentDest) {
+        this.baseInspectAngle = Phaser.Math.Angle.Wrap(Math.atan2(currentDest.y - this.pawn.y, currentDest.x - this.pawn.x) - Math.PI / 2);
+      } else {
+        this.baseInspectAngle = this.pawn.rotation;
+      }
       const inspectMs = (settings.inspectionTime ?? 2.5) * 1000;
       this.patrolManager.startInspection(inspectMs);
       this.currentPath = [];
@@ -347,8 +353,9 @@ export class KillerAIController implements IKillerController {
     const nextDest = this.patrolManager.getNextDestination(candidateGens, MAJOR_FACILITY_ROOMS);
     if (nextDest) {
       if (nextDest.type === 'generator') {
+        const matchingGen = generators.find((g) => g.name === nextDest.name);
         const standOff = getGeneratorStandOffPoint(
-          { x: nextDest.x, y: nextDest.y },
+          { x: nextDest.x, y: nextDest.y, rotation: matchingGen?.rotation ?? 0 },
           { x: this.pawn.x, y: this.pawn.y },
           (wx, wy) => this.pawn.isWalkableTile(wx, wy),
           72
