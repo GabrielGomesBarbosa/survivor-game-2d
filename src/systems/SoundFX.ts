@@ -5,6 +5,8 @@
  * estrondos de explosão de geradores e acordes melódicos de conclusão.
  */
 
+import { AudioManager } from '../audio/AudioManager';
+
 export class SoundFX {
   private static ctx: AudioContext | null = null;
 
@@ -70,21 +72,7 @@ export class SoundFX {
    * Toca o estrondo grave com decaimento exponencial ao falhar no Skill Check (explosão do gerador).
    */
   static playExplosion(): void {
-    const ctx = this.getContext();
-    if (!ctx) return;
-    try {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(140, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(28, ctx.currentTime + 0.5);
-      gain.gain.setValueAtTime(0.35, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.5);
-    } catch (_) {}
+    AudioManager.getInstance().playGeneratorExplosion();
   }
 
   /**

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
-import { formatGeneratorsHudText } from '../utils/gameLogic';
+import { formatGeneratorsHudText, calculateZoomCompensationScale } from '../utils/gameLogic';
+import { calculateTerrorCadence } from '../audio/AudioManager';
 
 /**
  * @class TelemetryHUD
@@ -11,6 +12,17 @@ export class TelemetryHUD {
   private alertContainer!: Phaser.GameObjects.Container;
   private alertText!: Phaser.GameObjects.Text;
   private alertBg!: Phaser.GameObjects.Rectangle;
+
+  // Heartbeat Visual & Screen Vignette
+  private heartContainer!: Phaser.GameObjects.Container;
+  private heartGraphics!: Phaser.GameObjects.Graphics;
+  private heartGlowGraphics!: Phaser.GameObjects.Graphics;
+  private vignetteGraphics!: Phaser.GameObjects.Graphics;
+  private isBeating: boolean = false;
+  private currentIntervalMs: number = 1000;
+  private currentBaseAlpha: number = 0;
+  private heartZoomScale: number = 1.0;
+  private pulseDelayTimer: Phaser.Time.TimerEvent | null = null;
 
   // DOM elements cache
   private hudFpsVal: HTMLElement | null = null;
@@ -26,12 +38,14 @@ export class TelemetryHUD {
     this.scene = scene;
     this.initDOMCache();
     this.createAlertContainer();
+    this.createHeartbeatVisual();
   }
 
   /**
    * Cache references to DOM telemetry elements in the header
    */
   private initDOMCache(): void {
+    if (typeof document === 'undefined') return;
     this.hudFpsVal = document.getElementById('hud-fps-val');
     this.hudFpsDot = document.getElementById('hud-fps-dot');
     this.hudKillerState = document.getElementById('hud-killer-state');
@@ -170,11 +184,241 @@ export class TelemetryHUD {
   }
 
   /**
+   * Creates the heartbeat visual container and vignette graphic for terror radius feedback
+   */
+  private createHeartbeatVisual(): void {
+    if (!this.scene?.add) return;
+
+    // 1. Vinheta avermelhada em tela cheia para distância crítica (< 200px)
+    this.createVignetteGraphics();
+
+    // 2. Container do coração posicionado no canto inferior central (640, 560)
+    this.heartContainer = this.scene.add.container(640, 560);
+    this.heartContainer.setScrollFactor(0);
+    this.heartContainer.setDepth(180);
+    this.heartContainer.setAlpha(0);
+
+    // Aura/brilho suave ao redor do coração
+    this.heartGlowGraphics = this.scene.add.graphics();
+    this.heartGlowGraphics.fillStyle(0xef4444, 0.22);
+    this.heartGlowGraphics.fillCircle(0, -4, 34);
+
+    // Desenho vetorial do coração estilizado (vermelho escuro com contorno vivo)
+    this.heartGraphics = this.scene.add.graphics();
+    this.heartGraphics.fillStyle(0x7f1d1d, 0.95);
+    this.heartGraphics.lineStyle(2.5, 0xef4444, 1.0);
+
+    // Curva paramétrica simétrica de coração vetorial
+    const heartPoints: { x: number; y: number }[] = [];
+    const steps = 36;
+    const curveScale = 1.35;
+    const yOffset = -2;
+    for (let i = 0; i < steps; i++) {
+      const t = (i / steps) * Math.PI * 2;
+      const sinT = Math.sin(t);
+      const px = (16 * Math.pow(sinT, 3)) * curveScale;
+      const py = (-(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) * curveScale) + yOffset;
+      heartPoints.push({ x: px, y: py });
+    }
+
+    this.heartGraphics.fillPoints(heartPoints, true);
+    this.heartGraphics.strokePoints(heartPoints, true);
+
+    // Destaque de relevo / brilho interno no lobo superior esquerdo
+    this.heartGraphics.fillStyle(0xfca5a5, 0.45);
+    this.heartGraphics.fillCircle(-10, -16, 4.5);
+
+    this.heartContainer.add([this.heartGlowGraphics, this.heartGraphics]);
+  }
+
+  /**
+   * Cria a vinheta avermelhada periférica com camadas de gradiente suave
+   */
+  private createVignetteGraphics(): void {
+    if (!this.scene?.add) return;
+
+    this.vignetteGraphics = this.scene.add.graphics();
+    this.vignetteGraphics.setScrollFactor(0);
+    this.vignetteGraphics.setDepth(140);
+    this.vignetteGraphics.setAlpha(0);
+
+    const w = 1280;
+    const h = 720;
+    const steps = 6;
+    for (let i = 0; i < steps; i++) {
+      const inset = i * 16;
+      const alpha = 0.24 - i * 0.035;
+      this.vignetteGraphics.lineStyle(18, 0x880000, alpha);
+      this.vignetteGraphics.strokeRect(inset + 9, inset + 9, w - (inset + 9) * 2, h - (inset + 9) * 2);
+    }
+  }
+
+  /**
+   * Atualiza o indicador visual de batimento cardíaco (coração pulsante) e vinheta da tela
+   * sincronizado matematicamente à cadência do Raio de Terror do AudioManager.
+   * @param distanceToKiller Distância euclidiana em pixels até o Assassino
+   * @param isSpectator Indica se o modo espectador está ativo (Survivor desativado)
+   * @param enabled Toggle geral do efeito visual (padrão: true)
+   */
+  public updateHeartbeatVisual(
+    distanceToKiller: number,
+    isSpectator: boolean,
+    enabled: boolean = true
+  ): void {
+    if (!this.heartContainer || !this.vignetteGraphics) return;
+
+    if (isSpectator || distanceToKiller > 500 || !enabled || Number.isNaN(distanceToKiller)) {
+      this.stopHeartbeatVisual();
+      return;
+    }
+
+    // Intensidade normalizada (0 no limiar de 500px até 1 no contato imediato a 0px)
+    const factor = Math.max(0, Math.min(1, 1 - (distanceToKiller / 500)));
+
+    // Opacidade base varia suavemente de 0.3 a 1.0 conforme a proximidade
+    this.currentBaseAlpha = 0.3 + 0.7 * factor;
+
+    // Frequência do pulso matematicamente sincronizada ao AudioManager (~60 BPM a 500px até ~140 BPM a <200px)
+    const cadence = calculateTerrorCadence(distanceToKiller);
+    this.currentIntervalMs = cadence.intervalMs;
+
+    // Se o pulso não estiver em animação no momento, dispara o próximo ciclo
+    if (!this.isBeating) {
+      this.startHeartbeatPulse();
+    }
+
+    // Vinheta avermelhada tênue na tela quando a distância for crítica (< 200px)
+    if (distanceToKiller < 200) {
+      const critFactor = Math.max(0, Math.min(1, 1 - (distanceToKiller / 200)));
+      this.vignetteGraphics.setAlpha(critFactor * 0.35);
+    } else {
+      this.vignetteGraphics.setAlpha(0);
+    }
+  }
+
+  /**
+   * Dispara o ciclo de pulso (expansão de 1.0 para 1.25 e retorno a 1.0)
+   */
+  private startHeartbeatPulse(): void {
+    if (!this.heartContainer || this.isBeating) return;
+    if (!this.scene?.tweens || !this.scene?.time) {
+      this.isBeating = false;
+      return;
+    }
+
+    this.isBeating = true;
+    const interval = this.currentIntervalMs;
+    const upDuration = Math.max(50, Math.round(interval * 0.28));
+    const downDuration = Math.max(60, Math.round(interval * 0.32));
+    const baseScale = this.heartZoomScale;
+
+    this.heartContainer.setAlpha(this.currentBaseAlpha);
+
+    this.scene.tweens.add({
+      targets: this.heartContainer,
+      scaleX: baseScale * 1.25,
+      scaleY: baseScale * 1.25,
+      alpha: Math.min(1.0, this.currentBaseAlpha + 0.15),
+      duration: upDuration,
+      ease: 'Sine.easeOut',
+      onComplete: () => {
+        if (!this.heartContainer || !this.isBeating) {
+          this.isBeating = false;
+          return;
+        }
+
+        this.scene.tweens.add({
+          targets: this.heartContainer,
+          scaleX: baseScale * 1.0,
+          scaleY: baseScale * 1.0,
+          alpha: this.currentBaseAlpha,
+          duration: downDuration,
+          ease: 'Quad.easeIn',
+          onComplete: () => {
+            if (!this.heartContainer || !this.isBeating) {
+              this.isBeating = false;
+              return;
+            }
+
+            const remainingDelay = Math.max(10, interval - upDuration - downDuration);
+            this.pulseDelayTimer = this.scene.time.delayedCall(remainingDelay, () => {
+              this.isBeating = false;
+            });
+          }
+        });
+      }
+    });
+  }
+
+  /**
+   * Interrompe imediatamente qualquer pulso ativo e oculta os elementos visuais de terror
+   */
+  public stopHeartbeatVisual(): void {
+    this.isBeating = false;
+
+    if (this.pulseDelayTimer) {
+      this.pulseDelayTimer.remove(false);
+      this.pulseDelayTimer = null;
+    }
+
+    if (this.heartContainer) {
+      if (this.scene?.tweens) {
+        this.scene.tweens.killTweensOf(this.heartContainer);
+      }
+      this.heartContainer.setScale(this.heartZoomScale);
+      this.heartContainer.setAlpha(0);
+    }
+
+    if (this.vignetteGraphics) {
+      this.vignetteGraphics.setAlpha(0);
+    }
+  }
+
+  /**
+   * Compensa o zoom da câmera para manter o tamanho e posição do coração consistentes no HUD
+   * @param zoom Zoom atual da câmera
+   */
+  public updateZoomScale(zoom: number): void {
+    const scale = calculateZoomCompensationScale(zoom);
+    this.heartZoomScale = scale;
+    if (this.heartContainer) {
+      const dy = 200; // Offset relativo a partir do centro (360 + 200 = 560 em zoom 1.0)
+      this.heartContainer.setPosition(640, 360 + dy * scale);
+      if (!this.isBeating) {
+        this.heartContainer.setScale(scale);
+      }
+    }
+  }
+
+  public get isHeartbeatBeating(): boolean {
+    return this.isBeating;
+  }
+
+  public get heartbeatContainer(): Phaser.GameObjects.Container {
+    return this.heartContainer;
+  }
+
+  public get screenVignette(): Phaser.GameObjects.Graphics {
+    return this.vignetteGraphics;
+  }
+
+  public get heartbeatBaseAlpha(): number {
+    return this.currentBaseAlpha;
+  }
+
+  /**
    * Clean up any game objects or listeners
    */
   public destroy(): void {
+    this.stopHeartbeatVisual();
     if (this.alertContainer) {
       this.alertContainer.destroy();
+    }
+    if (this.heartContainer) {
+      this.heartContainer.destroy();
+    }
+    if (this.vignetteGraphics) {
+      this.vignetteGraphics.destroy();
     }
   }
 }

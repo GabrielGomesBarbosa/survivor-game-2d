@@ -71,19 +71,28 @@ export class RepairPromptUI {
    * @param progress Progress percentage (0 - 100)
    * @param isRepairing Whether repair is currently active
    * @param isStaggered Whether the generator is currently locked due to recent short-circuit/explosion
+   * @param isRegressing Whether the generator is currently regressing
    */
-  public show(title: string, progress: number, isRepairing: boolean, isStaggered: boolean = false): void {
+  public show(
+    title: string,
+    progress: number,
+    isRepairing: boolean,
+    isStaggered: boolean = false,
+    isRegressing: boolean = false
+  ): void {
     this.updateZoomScale(this.scene.cameras?.main?.zoom || 1.0);
     this.container.setVisible(true);
     this.promptText.setText(title);
 
     const pct = Math.floor(progress);
-    this.percentText.setText(`${pct}%`);
+    this.percentText.setText(`${pct}%${isRegressing ? ' ⚡' : ''}`);
 
     if (isStaggered) {
       this.progressBarFill.setFillStyle(0xef4444);
     } else if (isRepairing) {
       this.progressBarFill.setFillStyle(0x10b981);
+    } else if (isRegressing) {
+      this.progressBarFill.setFillStyle(0xff4400);
     } else {
       this.progressBarFill.setFillStyle(0x38bdf8);
     }

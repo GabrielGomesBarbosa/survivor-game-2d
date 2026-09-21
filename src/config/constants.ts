@@ -51,6 +51,11 @@ export interface DebugSettings {
   survivorActive: boolean;
   generatorTotalTarget: number;
   generatorRequiredTarget: number;
+  // Audio Settings
+  audioEnabled: boolean;
+  masterVolume: number;
+  // HUD / Interface Settings
+  terrorHeartbeatVisual: boolean;
 }
 
 /**
@@ -81,7 +86,10 @@ export const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   placerSnapToGrid: true,
   survivorActive: true,
   generatorTotalTarget: 8,
-  generatorRequiredTarget: 5
+  generatorRequiredTarget: 5,
+  audioEnabled: true,
+  masterVolume: 0.7,
+  terrorHeartbeatVisual: true
 };
 
 /**

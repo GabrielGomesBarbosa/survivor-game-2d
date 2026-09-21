@@ -155,6 +155,14 @@ export class Killer implements IKillerPawn {
     }
   }
 
+  /**
+   * Indica se o Killer está atualmente em deslocamento ativo com velocidade física.
+   */
+  public get isMoving(): boolean {
+    const body = this.sprite?.body as Phaser.Physics.Arcade.Body | undefined;
+    return body ? Math.hypot(body.velocity.x, body.velocity.y) > 10 : false;
+  }
+
   // ==========================================
   // ATUADORES FÍSICOS (Comandos de Controle)
   // ==========================================

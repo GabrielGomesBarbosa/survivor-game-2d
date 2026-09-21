@@ -7,9 +7,12 @@
 
 import Phaser from 'phaser';
 import { SoundFX } from '../systems/SoundFX';
+import { AudioManager } from '../audio/AudioManager';
 import {
   addGeneratorProgress,
   applyExplosionPenalty,
+  applyGeneratorKick,
+  applyGeneratorRegression,
   calculateZoomCompensationScale,
   GENERATOR_HITBOX_WIDTH,
   GENERATOR_HITBOX_HEIGHT,
@@ -36,6 +39,10 @@ export class Generator {
 
   public progress = 0; // 0 a 100
   public isCompleted = false;
+  public isRegressing = false;
+  public regressRate = 0.25; // 0.25%/s (1% a cada 4s no padrão DBD)
+  public repairAccumulatedTime = 0;
+  private sparkTimer = 0;
   public interactionRadius = GENERATOR_INTERACTION_RADIUS;
   public hitboxWidth: number;
   public hitboxHeight: number;
@@ -178,6 +185,16 @@ export class Generator {
 
       this.floorZone.setStrokeStyle(2, 0x00ff88, 0.5);
       this.floorZone.setFillStyle(0x00ff88, 0.06);
+    } else if (this.isRegressing) {
+      // Estado de regressão: chapa danificada soltando faíscas (frame 1) e barra de progresso alaranjada
+      this.setFrame(1);
+      this.progressBarFill.width = Math.max(0, Math.min(66, (pct / 100) * 66));
+      this.progressBarFill.setFillStyle(0xff4400);
+      this.progressText.setText(`${pct}% ⚡`);
+      this.progressText.setColor('#ff6622');
+
+      this.floorZone.setStrokeStyle(2, 0xff4400, 0.55);
+      this.floorZone.setFillStyle(0xff4400, 0.06);
     } else {
       if (isRepairingThisGen) {
         this.setFrame(1);
@@ -219,11 +236,122 @@ export class Generator {
    * Conclui permanentemente o gerador, tocando áudio harmônico e ativando luz verde e Frame 2.
    */
   public complete(): void {
+    this.stopRegression();
     this.isCompleted = true;
     this.progress = 100;
     this.setFrame(2);
     SoundFX.playCompletion();
     this.updateVisuals(false);
+  }
+
+  /**
+   * Executa a ação de chute do Assassino no gerador:
+   * - Reduz imediatamente 5% de progresso
+   * - Ativa isRegressing = true (se progresso remanescente > 0)
+   * - Emite áudio de chute e faíscas estocásticas
+   * - Gera impacto visual de faíscas
+   */
+  public kickGenerator(): void {
+    if (this.isCompleted) return;
+
+    const result = applyGeneratorKick(this.progress, 5);
+    this.progress = result.progress;
+    this.isRegressing = result.isRegressing;
+    this.repairAccumulatedTime = 0;
+
+    AudioManager.getInstance().playGeneratorKickSound();
+    if (this.isRegressing) {
+      AudioManager.getInstance().startGeneratorSparkingSound(this.id);
+    } else {
+      AudioManager.getInstance().stopGeneratorSparkingSound(this.id);
+    }
+
+    this.createExplosionBurst(12);
+    this.updateVisuals(false);
+  }
+
+  /**
+   * Interrompe a regressão contínua do gerador e desliga faíscas sonoras.
+   */
+  public stopRegression(): void {
+    if (!this.isRegressing) return;
+    this.isRegressing = false;
+    this.repairAccumulatedTime = 0;
+    AudioManager.getInstance().stopGeneratorSparkingSound(this.id);
+    this.updateVisuals(false);
+  }
+
+  /**
+   * Registra tempo acumulado de conserto pelo Survivor para estabilizar o gerador (>= 0.2s).
+   * @param deltaMs Tempo decorrido em ms neste frame de reparo.
+   * @returns {boolean} True se a regressão foi interrompida neste tick.
+   */
+  public onRepairTick(deltaMs: number): boolean {
+    if (!this.isRegressing) return false;
+    this.repairAccumulatedTime += deltaMs;
+    if (this.repairAccumulatedTime >= 200) { // 0.2s (200ms)
+      this.stopRegression();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Atualização contínua por frame do gerador (regressão e emissão de faíscas).
+   */
+  public update(delta: number): void {
+    if (this.isRegressing) {
+      if (this.isCompleted || this.progress <= 0) {
+        this.progress = Math.max(0, this.progress);
+        this.stopRegression();
+        return;
+      }
+
+      const result = applyGeneratorRegression(this.progress, delta, this.regressRate);
+      this.progress = result.progress;
+
+      if (!result.isRegressing || this.progress <= 0) {
+        this.progress = 0;
+        this.stopRegression();
+        return;
+      }
+
+      // Efeito visual periódico de faíscas enquanto estiver regredindo
+      this.sparkTimer += delta;
+      if (this.sparkTimer >= 220) {
+        this.sparkTimer = 0;
+        this.emitRegressionSpark();
+      }
+
+      this.updateVisuals(false);
+    }
+  }
+
+  /**
+   * Emite pequenas faíscas visuais de curto alcance durante a regressão contínua.
+   */
+  private emitRegressionSpark(): void {
+    if (!this.scene || !this.scene.add) return;
+    const colors = [0xffdd44, 0xff8822, 0xffffff];
+    for (let i = 0; i < 2; i++) {
+      const offsetX = Phaser.Math.Between(-14, 14);
+      const offsetY = Phaser.Math.Between(-18, 8);
+      const spark = this.scene.add.circle(this.x + offsetX, this.y + offsetY, 2.5, Phaser.Math.RND.pick(colors));
+      spark.setDepth(12);
+
+      if (this.scene.tweens) {
+        this.scene.tweens.add({
+          targets: spark,
+          y: spark.y - Phaser.Math.Between(15, 30),
+          x: spark.x + Phaser.Math.Between(-12, 12),
+          alpha: 0,
+          scale: 0.2,
+          duration: Phaser.Math.Between(180, 320),
+          ease: 'Cubic.Out',
+          onComplete: () => spark.destroy()
+        });
+      }
+    }
   }
 
   /**
@@ -240,15 +368,16 @@ export class Generator {
     this.setFrame(0);
     this.progress = applyExplosionPenalty(this.progress, 10);
     this.updateVisuals(false);
-    this.createExplosionBurst();
+    this.createExplosionBurst(22);
   }
 
   /**
-   * Cria emissão radial de faíscas cintilantes ao explodir o gerador.
+   * Cria emissão radial de faíscas cintilantes ao explodir ou chutar o gerador.
    */
-  private createExplosionBurst(): void {
+  private createExplosionBurst(count: number = 22): void {
+    if (!this.scene || !this.scene.add) return;
     const colors = [0xffdd44, 0xff8822, 0xff2200, 0xffffff];
-    for (let i = 0; i < 22; i++) {
+    for (let i = 0; i < count; i++) {
       const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
       const speed = Phaser.Math.Between(70, 240);
       const color = Phaser.Math.RND.pick(colors);
@@ -256,16 +385,18 @@ export class Generator {
       const spark = this.scene.add.circle(this.x, this.y, radius, color);
       spark.setDepth(12);
 
-      this.scene.tweens.add({
-        targets: spark,
-        x: this.x + Math.cos(angle) * speed,
-        y: this.y + Math.sin(angle) * speed,
-        alpha: 0,
-        scale: 0.2,
-        duration: Phaser.Math.Between(350, 650),
-        ease: 'Cubic.Out',
-        onComplete: () => spark.destroy()
-      });
+      if (this.scene.tweens) {
+        this.scene.tweens.add({
+          targets: spark,
+          x: this.x + Math.cos(angle) * speed,
+          y: this.y + Math.sin(angle) * speed,
+          alpha: 0,
+          scale: 0.2,
+          duration: Phaser.Math.Between(350, 650),
+          ease: 'Cubic.Out',
+          onComplete: () => spark.destroy()
+        });
+      }
     }
   }
 
@@ -273,6 +404,7 @@ export class Generator {
    * Reseta o gerador para o estado inativo (0% de progresso).
    */
   public reset(): void {
+    this.stopRegression();
     this.progress = 0;
     this.isCompleted = false;
     this.setFrame(0);
@@ -283,6 +415,7 @@ export class Generator {
    * Destrói todos os elementos visuais e colisores físicos do gerador.
    */
   public destroy(): void {
+    this.stopRegression();
     if (this.floorZone) {
       this.floorZone.destroy();
     }

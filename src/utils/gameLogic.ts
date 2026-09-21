@@ -1624,6 +1624,7 @@ export interface ActiveGeneratorData {
   maxSurvivors?: number;
   progress?: number;
   isCompleted?: boolean;
+  isRegressing?: boolean;
 }
 
 /**
@@ -1653,7 +1654,8 @@ export function parseActiveGeneratorsJson(rawJson: string | null | undefined): A
       rotation: typeof g.rotation === 'number' ? g.rotation : 0,
       maxSurvivors: typeof g.maxSurvivors === 'number' ? g.maxSurvivors : 4,
       progress: typeof g.progress === 'number' ? g.progress : 0,
-      isCompleted: Boolean(g.isCompleted || (typeof g.progress === 'number' && g.progress >= 100))
+      isCompleted: Boolean(g.isCompleted || (typeof g.progress === 'number' && g.progress >= 100)),
+      ...(g.isRegressing ? { isRegressing: true } : {})
     }));
   } catch {
     return [];
@@ -1847,6 +1849,63 @@ export function isPlayerDetectableByKiller(
   isPlayerVisible: boolean = true
 ): boolean {
   return survivorActive && isPlayerActive && isPlayerVisible;
+}
+
+/**
+ * Aplica o impacto inicial do chute do Killer no gerador (-5% de dano imediato e ativa regressão contínua).
+ * @param currentProgress Progresso atual de 0 a 100.
+ * @param kickPenalty Penalidade percentual imediata (padrão: 5%).
+ */
+export function applyGeneratorKick(
+  currentProgress: number,
+  kickPenalty: number = 5
+): { progress: number; isRegressing: boolean } {
+  if (currentProgress <= 0) {
+    return { progress: 0, isRegressing: false };
+  }
+  const newProgress = Math.max(0, currentProgress - kickPenalty);
+  return {
+    progress: newProgress,
+    isRegressing: newProgress > 0
+  };
+}
+
+/**
+ * Aplica a perda de progresso da regressão contínua com base no tempo decorrido.
+ * @param currentProgress Progresso atual de 0 a 100.
+ * @param deltaMs Tempo decorrido em milissegundos.
+ * @param regressRate Taxa de perda em % por segundo (padrão: 0.25%/s, ou 1% a cada 4s).
+ */
+export function applyGeneratorRegression(
+  currentProgress: number,
+  deltaMs: number,
+  regressRate: number = 0.25
+): { progress: number; isRegressing: boolean } {
+  if (currentProgress <= 0) {
+    return { progress: 0, isRegressing: false };
+  }
+  const loss = regressRate * (deltaMs / 1000);
+  const newProgress = Math.max(0, currentProgress - loss);
+  return {
+    progress: newProgress,
+    isRegressing: newProgress > 0
+  };
+}
+
+/**
+ * Avalia se o Killer deve chutar o gerador especificado durante a patrulha.
+ * O gerador só deve ser chutado se possuir progresso > 0%, não estiver 100% concluído e não estiver regredindo.
+ */
+export function shouldKillerKickGenerator(generator: {
+  progress: number;
+  isCompleted?: boolean;
+  isRegressing?: boolean;
+} | null | undefined): boolean {
+  if (!generator) return false;
+  if (generator.isCompleted) return false;
+  if (generator.progress <= 0) return false;
+  if (generator.isRegressing) return false;
+  return true;
 }
 
 

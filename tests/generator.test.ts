@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   addGeneratorProgress,
   applyExplosionPenalty,
+  applyGeneratorKick,
+  applyGeneratorRegression,
+  shouldKillerKickGenerator,
   calculateZoomCompensationScale,
   GENERATOR_HITBOX_WIDTH,
   GENERATOR_HITBOX_HEIGHT,
@@ -176,6 +179,76 @@ describe('UI Zoom Compensation Scale (Prompt Legibility on Far Zoom)', () => {
     expect(calculateZoomCompensationScale(0)).toBe(10); // 1 / 0.1
     expect(calculateZoomCompensationScale(-0.5)).toBe(10);
     expect(calculateZoomCompensationScale(0.05, 0.05)).toBe(20);
+  });
+});
+
+describe('Killer Generator Kick & Continuous Regression Logic (DBD Style)', () => {
+  describe('applyGeneratorKick', () => {
+    it('applies immediate 5% penalty and activates continuous regression when progress > 0', () => {
+      const result = applyGeneratorKick(40);
+      expect(result.progress).toBe(35);
+      expect(result.isRegressing).toBe(true);
+    });
+
+    it('clamps at 0% and does not activate regression if penalty exhausts all progress', () => {
+      const result = applyGeneratorKick(3);
+      expect(result.progress).toBe(0);
+      expect(result.isRegressing).toBe(false);
+    });
+
+    it('does nothing if generator is already at 0% progress', () => {
+      const result = applyGeneratorKick(0);
+      expect(result.progress).toBe(0);
+      expect(result.isRegressing).toBe(false);
+    });
+  });
+
+  describe('applyGeneratorRegression', () => {
+    it('regresses progress continuously at default 0.25%/s (1% every 4000ms)', () => {
+      const result = applyGeneratorRegression(50, 4000, 0.25);
+      expect(result.progress).toBeCloseTo(49, 4);
+      expect(result.isRegressing).toBe(true);
+    });
+
+    it('calculates loss correctly for sub-second frames (e.g. 16.6ms at 60fps)', () => {
+      const result = applyGeneratorRegression(50, 16.666, 0.25);
+      const expectedLoss = 0.25 * (16.666 / 1000);
+      expect(result.progress).toBeCloseTo(50 - expectedLoss, 4);
+      expect(result.isRegressing).toBe(true);
+    });
+
+    it('automatically halts regression (isRegressing = false) when progress reaches 0%', () => {
+      const result = applyGeneratorRegression(0.1, 1000, 0.25);
+      expect(result.progress).toBe(0);
+      expect(result.isRegressing).toBe(false);
+    });
+  });
+
+  describe('shouldKillerKickGenerator', () => {
+    it('returns true for an uncompleted generator with progress > 0 that is not yet regressing', () => {
+      const gen = { progress: 30, isCompleted: false, isRegressing: false };
+      expect(shouldKillerKickGenerator(gen)).toBe(true);
+    });
+
+    it('returns false if generator progress is 0%', () => {
+      const gen = { progress: 0, isCompleted: false, isRegressing: false };
+      expect(shouldKillerKickGenerator(gen)).toBe(false);
+    });
+
+    it('returns false if generator is already actively regressing', () => {
+      const gen = { progress: 45, isCompleted: false, isRegressing: true };
+      expect(shouldKillerKickGenerator(gen)).toBe(false);
+    });
+
+    it('returns false if generator is already 100% completed', () => {
+      const gen = { progress: 100, isCompleted: true, isRegressing: false };
+      expect(shouldKillerKickGenerator(gen)).toBe(false);
+    });
+
+    it('returns false for null or undefined generator', () => {
+      expect(shouldKillerKickGenerator(null)).toBe(false);
+      expect(shouldKillerKickGenerator(undefined)).toBe(false);
+    });
   });
 });
 

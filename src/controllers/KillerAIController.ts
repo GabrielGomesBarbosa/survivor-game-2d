@@ -9,7 +9,7 @@ import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
 import { Player } from '../entities/Player';
 import { Generator } from '../entities/Generator';
-import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState, isPlayerDetectableByKiller, evaluatePatrolArrival } from '../utils/gameLogic';
+import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState, isPlayerDetectableByKiller, evaluatePatrolArrival, shouldKillerKickGenerator } from '../utils/gameLogic';
 import { IKillerController } from './KillerController';
 
 export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO' | 'STANDBY';
@@ -51,6 +51,8 @@ export class KillerAIController implements IKillerController {
   private hasDirectLOS = false;
   private baseInspectAngle = 0;
   private lastKnownGenerators: Generator[] = [];
+  private isKicking = false;
+  private kickTimer = 0;
 
   constructor(pawn: IKillerPawn) {
     this.pawn = pawn;
@@ -60,6 +62,10 @@ export class KillerAIController implements IKillerController {
 
   public getState(): string {
     return this.state;
+  }
+
+  public get isKickingGenerator(): boolean {
+    return this.isKicking;
   }
 
   /**
@@ -111,6 +117,7 @@ export class KillerAIController implements IKillerController {
         if (hasLOS || distToPlayer <= 100) {
           if (this.state !== 'CHASE') {
             this.patrolManager.interruptInspection();
+            this.isKicking = false;
             this.state = 'CHASE';
             this.currentPath = [];
             this.currentPathIndex = 0;
@@ -236,11 +243,23 @@ export class KillerAIController implements IKillerController {
   }
 
   /**
-   * Estado INSPECTING: pausa de 2.5s no gerador olhando ao redor da sala.
+   * Estado INSPECTING: pausa de inspeção ou ação de chute no gerador voltado para o motor.
    */
   private handleInspectingState(delta: number, generators: Generator[]): void {
     this.pawn.stopMovement();
     this.pawn.stopAnimation(0);
+
+    if (this.isKicking) {
+      this.kickTimer -= delta;
+      // Mantém o Killer voltado diretamente para o gerador durante o impacto do chute
+      this.pawn.rotateTowards(this.baseInspectAngle, delta, 12);
+      if (this.kickTimer <= 0) {
+        this.isKicking = false;
+        this.state = 'PATROL';
+        this.advanceToNextPatrolGenerator(generators);
+      }
+      return;
+    }
 
     const { isComplete, lookOffset } = this.patrolManager.tickInspection(delta);
     this.pawn.rotateTowards(this.baseInspectAngle + lookOffset, delta, 4);
@@ -284,9 +303,23 @@ export class KillerAIController implements IKillerController {
       } else {
         this.baseInspectAngle = this.pawn.rotation;
       }
-      const inspectMs = (settings.inspectionTime ?? 2.5) * 1000;
-      this.patrolManager.startInspection(inspectMs);
       this.currentPath = [];
+
+      // Avalia se o gerador alvo pode ser chutado (>0%, não concluído, não regredindo)
+      const targetGen = (isTargetingGenerator && currentDest)
+        ? generators.find((g) => g.name === currentDest.name || Math.hypot(g.x - currentDest.x, g.y - currentDest.y) <= 130)
+        : undefined;
+
+      if (targetGen && shouldKillerKickGenerator(targetGen)) {
+        this.isKicking = true;
+        this.kickTimer = 1500; // ~1.5s voltado para o motor
+        targetGen.kickGenerator();
+        this.patrolManager.startInspection(1500);
+      } else {
+        this.isKicking = false;
+        const inspectMs = (settings.inspectionTime ?? 2.5) * 1000;
+        this.patrolManager.startInspection(inspectMs);
+      }
       return;
     }
 
@@ -387,6 +420,7 @@ export class KillerAIController implements IKillerController {
   ): void {
     if (this.state === 'DESATIVADO' || this.state === 'STANDBY') return;
     this.patrolManager.interruptInspection();
+    this.isKicking = false;
     this.state = 'PATROL';
 
     const gen =

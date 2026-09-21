@@ -9,6 +9,7 @@ import { Killer } from '../entities/Killer';
 import { Generator } from '../entities/Generator';
 import { SkillCheckSystem, SkillCheckResult } from '../systems/SkillCheckSystem';
 import { SoundFX } from '../systems/SoundFX';
+import { AudioManager } from '../audio/AudioManager';
 import { TelemetryHUD } from '../ui/TelemetryHUD';
 import { RepairPromptUI } from '../ui/RepairPromptUI';
 import { DebugPanel } from '../ui/DebugPanel';
@@ -46,6 +47,8 @@ export class SandboxScene extends Phaser.Scene {
   private isRepairing = false;
   private repairStaggerTimer = 0;
   private isMatchWon = false;
+  private survivorFootstepTimer = 0;
+  private killerFootstepTimer = 0;
 
   // Systems and UI
   private skillCheck!: SkillCheckSystem;
@@ -53,6 +56,14 @@ export class SandboxScene extends Phaser.Scene {
   private telemetryHud!: TelemetryHUD;
   public debugPanel!: DebugPanel;
   private generatorPlacer!: GeneratorPlacer;
+
+  public get hud(): TelemetryHUD {
+    return this.telemetryHud;
+  }
+
+  public get isSpectatorMode(): boolean {
+    return !this.player.isActive || !this.debugPanel.settings.survivorActive;
+  }
 
   // Inputs & Pan Navigation
   private keyE!: Phaser.Input.Keyboard.Key;
@@ -142,8 +153,10 @@ export class SandboxScene extends Phaser.Scene {
       onClearAllGenerators: () => this.clearAllGenerators(true, true),
       onSurvivorActiveToggled: (active: boolean) => {
         this.player.setActiveState(active);
-        if (!active && this.isRepairing) {
-          this.stopRepairing();
+        if (!active) {
+          if (this.isRepairing) this.stopRepairing();
+          AudioManager.getInstance().stopTerrorRadius();
+          this.telemetryHud.stopHeartbeatVisual();
         }
         this.telemetryHud.showNotification(
           active ? '👤 Survivor reativado no mapa!' : '👁️ Modo Espectador ativo: Survivor invisível e intangível.',
@@ -152,6 +165,15 @@ export class SandboxScene extends Phaser.Scene {
       },
       onGeneratorTargetsChanged: () => {
         this.updateTelemetry();
+      },
+      onAudioSettingsChanged: (enabled, vol) => {
+        AudioManager.getInstance().setEnabled(enabled);
+        AudioManager.getInstance().setMasterVolume(vol);
+      },
+      onTerrorHeartbeatVisualToggled: (enabled: boolean) => {
+        if (!enabled) {
+          this.telemetryHud.stopHeartbeatVisual();
+        }
       },
       onResetDefaults: () => {
         const s = this.debugPanel.settings;
@@ -166,6 +188,11 @@ export class SandboxScene extends Phaser.Scene {
         }
         this.generatorPlacer.setActive(s.editorMode);
         this.generatorPlacer.snapToGrid = s.placerSnapToGrid;
+        AudioManager.getInstance().setEnabled(s.audioEnabled);
+        AudioManager.getInstance().setMasterVolume(s.masterVolume);
+        if (!s.terrorHeartbeatVisual) {
+          this.telemetryHud.stopHeartbeatVisual();
+        }
       }
     });
 
@@ -350,18 +377,90 @@ export class SandboxScene extends Phaser.Scene {
         false
       );
     }
+
+    // 8. Inicialização do AudioManager a partir das configurações salvas
+    const audio = AudioManager.getInstance();
+    audio.setEnabled(this.debugPanel.settings.audioEnabled);
+    audio.setMasterVolume(this.debugPanel.settings.masterVolume);
   }
 
   update(_time: number, delta: number): void {
     if (this.generatorPlacer?.isActive) {
       this.generatorPlacer.update(this.input.activePointer);
     }
+
+    // 1. Atualização contínua de regressão e faíscas em todos os geradores ativos
+    for (const gen of this.generators) {
+      gen.update(delta);
+    }
+
     this.handleGeneratorInteraction(delta);
     this.player.update(delta, this.isRepairing, this.debugPanel.settings);
     this.killer.update(delta, this.player, this.generators.filter((g) => !g.isCompleted), this.debugPanel.settings);
     this.skillCheck.update(
       delta, this.isRepairing, this.debugPanel.settings.skillCheckFrequency,
       this.repairStaggerTimer <= 0, (res) => this.onSkillCheckResult(res)
+    );
+
+    // ==========================================
+    // EFEITOS SONOROS PROCEDURAIS (AudioManager)
+    // ==========================================
+    const audio = AudioManager.getInstance();
+
+    // 1. Passos cadenciados do Survivor sincronizados à locomoção
+    if (
+      this.player.isActive &&
+      this.debugPanel.settings.survivorActive &&
+      this.player.isMoving &&
+      this.player.currentSpeed > 5
+    ) {
+      this.survivorFootstepTimer += delta;
+      const survivorCadence = this.player.isSprinting ? 270 : 380;
+      if (this.survivorFootstepTimer >= survivorCadence) {
+        this.survivorFootstepTimer = 0;
+        audio.playSurvivorFootstep(this.player.isSprinting);
+      }
+    } else {
+      this.survivorFootstepTimer = 0;
+    }
+
+    // 2. Passos pesados cadenciados do Killer
+    if (this.killer.isMoving) {
+      this.killerFootstepTimer += delta;
+      const killerCadence = this.killer.state === 'CHASE' ? 330 : 440;
+      if (this.killerFootstepTimer >= killerCadence) {
+        this.killerFootstepTimer = 0;
+        const distToPlayer = (this.player.isActive && this.debugPanel.settings.survivorActive)
+          ? Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y)
+          : 0;
+        const volScale = distToPlayer > 1200 ? 0 : Math.max(0.1, 1 - distToPlayer / 1200);
+        audio.playKillerFootstep(volScale);
+      }
+    } else {
+      this.killerFootstepTimer = 0;
+    }
+
+    // 3. Som contínuo de manutenção / reparo de gerador
+    if (this.isRepairing && this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
+      audio.startGeneratorRepairSound();
+    } else {
+      audio.stopGeneratorRepairSound();
+    }
+
+    // 4. Raio de Terror de Duas Camadas (Heartbeat < 500px + Drone Dissonante < 250px ou CHASE)
+    const isSpectator = this.isSpectatorMode;
+    const terrorDist = isSpectator
+      ? Infinity
+      : Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y);
+    const killerState = isSpectator ? 'STANDBY' : this.killer.state;
+
+    audio.updateTerrorRadius(terrorDist, killerState, delta);
+
+    // 5. Feedback Visual do Raio de Terror (Coração Pulsante & Vinheta)
+    this.hud.updateHeartbeatVisual(
+      terrorDist,
+      isSpectator,
+      this.debugPanel.settings.terrorHeartbeatVisual
     );
   }
 
@@ -404,9 +503,21 @@ export class SandboxScene extends Phaser.Scene {
         this.isRepairing = true;
         this.skillCheck.resetTimer(this.debugPanel.settings.skillCheckFrequency);
       }
+
+      // Se o gerador estiver regredindo, consertar por >= 0.2s (200ms) estabiliza a máquina
+      if (closestGen.isRegressing) {
+        const stabilized = closestGen.onRepairTick(delta);
+        if (stabilized) {
+          this.telemetryHud.showNotification('🔧 Gerador estabilizado! Regressão interrompida.', false);
+        }
+      }
+
       const repairRate = 100 / Math.max(1, this.debugPanel.settings.generatorRepairTime);
       const isComplete = closestGen.addProgress(repairRate * (delta / 1000));
-      this.repairPrompt.show(`🔧 REPARANDO... [E] Manter Pressionado (${closestGen.roomName})`, closestGen.progress, true);
+      const promptLabel = closestGen.isRegressing
+        ? `⚡ ESTABILIZANDO... [E] Manter Pressionado (${closestGen.roomName})`
+        : `🔧 REPARANDO... [E] Manter Pressionado (${closestGen.roomName})`;
+      this.repairPrompt.show(promptLabel, closestGen.progress, true, false, closestGen.isRegressing);
 
       if (isComplete) {
         this.stopRepairing();
@@ -427,13 +538,25 @@ export class SandboxScene extends Phaser.Scene {
       }
     } else {
       if (this.isRepairing) this.stopRepairing();
+      closestGen.repairAccumulatedTime = 0;
       closestGen.updateVisuals(false);
-      this.repairPrompt.show(`[E] Reparar ${closestGen.name} (${closestGen.roomName})`, closestGen.progress, false);
+      if (closestGen.isRegressing) {
+        this.repairPrompt.show(
+          `⚠️ [E] Reparar ${closestGen.name} (EM REGRESSÃO)`,
+          closestGen.progress,
+          false,
+          false,
+          true
+        );
+      } else {
+        this.repairPrompt.show(`[E] Reparar ${closestGen.name} (${closestGen.roomName})`, closestGen.progress, false);
+      }
     }
   }
 
   private stopRepairing(): void {
     this.isRepairing = false;
+    AudioManager.getInstance().stopGeneratorRepairSound();
     if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
       this.activeNearbyGen.updateVisuals(false);
     }
@@ -449,6 +572,8 @@ export class SandboxScene extends Phaser.Scene {
         this.activeNearbyGen.addProgress(result === 'GREAT' ? 5 : 1.5);
       }
     } else {
+      AudioManager.getInstance().playGeneratorExplosion();
+      AudioManager.getInstance().stopGeneratorRepairSound();
       if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
         this.activeNearbyGen.explode();
         this.repairStaggerTimer = 1400;
@@ -507,6 +632,9 @@ export class SandboxScene extends Phaser.Scene {
     if (this.generatorPlacer) {
       this.generatorPlacer.updateZoomScale(zoom);
     }
+    if (this.telemetryHud) {
+      this.telemetryHud.updateZoomScale(zoom);
+    }
   }
 
   /**
@@ -556,6 +684,10 @@ export class SandboxScene extends Phaser.Scene {
           gen.setFrame(2);
         } else if (gen.progress > 0) {
           gen.setFrame(1);
+        }
+        if ('isRegressing' in cand && cand.isRegressing && !gen.isCompleted && gen.progress > 0) {
+          gen.isRegressing = true;
+          AudioManager.getInstance().startGeneratorSparkingSound(gen.id);
         }
         gen.updateVisuals(false);
       }
@@ -614,6 +746,7 @@ export class SandboxScene extends Phaser.Scene {
 
     this.generators.forEach((g) => g.destroy());
     this.generators = [];
+    AudioManager.getInstance().stopAllSparkingSounds();
     this.refreshNavGridAndEasyStar();
 
     if (clearStorage) {
@@ -639,7 +772,8 @@ export class SandboxScene extends Phaser.Scene {
       y: g.y,
       rotation: g.rotation,
       progress: Math.floor(g.progress),
-      isCompleted: g.isCompleted
+      isCompleted: g.isCompleted,
+      isRegressing: g.isRegressing
     }));
     saveActiveGeneratorsToStorage(data);
   }

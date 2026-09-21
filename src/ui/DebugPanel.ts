@@ -27,6 +27,8 @@ export interface DebugPanelCallbacks {
   onClearAllGenerators?: () => void;
   onSurvivorActiveToggled?: (active: boolean) => void;
   onGeneratorTargetsChanged?: (total: number, required: number) => void;
+  onAudioSettingsChanged?: (enabled: boolean, volume: number) => void;
+  onTerrorHeartbeatVisualToggled?: (enabled: boolean) => void;
   onResetDefaults?: () => void;
 }
 
@@ -401,7 +403,51 @@ export class DebugPanel {
     );
     editorFolder.open();
 
-    // 8. Botão de restaurar configurações padrão
+    // 8. Áudio
+    const audioFolder = this.gui.addFolder('Áudio');
+    this.attachTooltip(
+      audioFolder
+        .add(this.settings, 'audioEnabled')
+        .name('Áudio Ativo')
+        .onChange((val: boolean) => {
+          this.settings.audioEnabled = Boolean(val);
+          this.saveSettingsToStorage();
+          this.callbacks.onAudioSettingsChanged?.(this.settings.audioEnabled, this.settings.masterVolume);
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Habilita ou desabilita os efeitos sonoros procedurais do jogo.'
+    );
+    this.attachTooltip(
+      audioFolder
+        .add(this.settings, 'masterVolume', 0, 1, 0.05)
+        .name('Volume Geral')
+        .onChange((val: number) => {
+          this.settings.masterVolume = Number(val);
+          this.saveSettingsToStorage();
+          this.callbacks.onAudioSettingsChanged?.(this.settings.audioEnabled, this.settings.masterVolume);
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Volume mestre de todos os efeitos sonoros gerados via Web Audio API (0 a 1).'
+    );
+    audioFolder.open();
+
+    // 9. HUD / Interface
+    const hudFolder = this.gui.addFolder('HUD / Interface');
+    this.attachTooltip(
+      hudFolder
+        .add(this.settings, 'terrorHeartbeatVisual')
+        .name('Coração de Terror Visual')
+        .onChange((val: boolean) => {
+          this.settings.terrorHeartbeatVisual = Boolean(val);
+          this.saveSettingsToStorage();
+          this.callbacks.onTerrorHeartbeatVisualToggled?.(this.settings.terrorHeartbeatVisual);
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Exibe o ícone visual de coração pulsante no HUD sincronizado matematicamente ao Raio de Terror do Killer.'
+    );
+    hudFolder.open();
+
+    // 10. Botão de restaurar configurações padrão
     const actions = {
       resetDefaults: () => this.resetSettingsToDefaults()
     };
