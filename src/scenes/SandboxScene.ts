@@ -15,6 +15,7 @@ import { RepairPromptUI } from '../ui/RepairPromptUI';
 import { DebugPanel } from '../ui/DebugPanel';
 import {
   calculateEdgeToEdgeDistance,
+  pixelsToMeters,
   formatCurrentTile,
   evaluateCameraPanState,
   getMappedCandidatePool,
@@ -596,10 +597,11 @@ export class SandboxScene extends Phaser.Scene {
     const playerRadius = this.debugPanel.settings.hitboxRadius * this.debugPanel.settings.playerScale;
     const killerRadius = playerRadius * 1.28;
     const effectiveDist = calculateEdgeToEdgeDistance(centerDist, playerRadius, killerRadius);
-    const killerDistStr = `${Math.round(effectiveDist)}px`;
+    const distMeters = pixelsToMeters(effectiveDist);
+    const killerDistStr = `${distMeters.toFixed(1)}m`;
 
     const mon = this.debugPanel.monitorState;
-    mon.currentSpeed = this.player.currentSpeed;
+    mon.currentSpeed = Number(pixelsToMeters(this.player.currentSpeed).toFixed(1));
     mon.isMoving = this.player.isMoving;
     mon.isSprinting = this.player.isSprinting;
     mon.rotationDeg = `${Math.round(Phaser.Math.RadToDeg(this.player.rotation))}°`;
@@ -609,7 +611,7 @@ export class SandboxScene extends Phaser.Scene {
     mon.playerY = this.player.y.toFixed(1);
     mon.currentTile = formatCurrentTile(this.player.x, this.player.y);
     mon.killerState = this.killer.state;
-    mon.killerDist = killerDistStr;
+    mon.killerDist = `${distMeters.toFixed(1)}m (${Math.round(effectiveDist)}px)`;
     mon.fps = fps;
 
     const completedCount = this.generators.filter((g) => g.isCompleted).length;

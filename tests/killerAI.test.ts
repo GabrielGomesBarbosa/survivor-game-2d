@@ -12,8 +12,14 @@ import {
   formatCurrentTile,
   getGeneratorOccupiedTiles,
   updateNavGridWithGenerators,
-  evaluatePatrolArrival
+  evaluatePatrolArrival,
+  PIXELS_PER_METER,
+  metersToPixels,
+  pixelsToMeters,
+  formatMapDimensionsMetric
 } from '../src/utils/gameLogic';
+import { KillerAIController, IKillerPawn } from '../src/controllers/KillerAIController';
+import { DEFAULT_DEBUG_SETTINGS } from '../src/config/constants';
 
 
 describe('Killer AI - Patrol Cycle & Generator Inspection (Anti-Regression)', () => {
@@ -226,18 +232,19 @@ describe('alertToNoise Unfreeze & Resilient Arrival (DIAGNOSTICO_KILLER_FREEZE)'
       expect(evaluatePatrolArrival(32, true, 112)).toBe(true);
     });
 
-    it('confirms arrival when Killer is within interaction zone (distToGen <= 130) and adjacent to stand-off (distToTarget <= 55)', () => {
+    it('confirms arrival when Killer is within interaction zone (distToGen <= 130) and adjacent to stand-off (distToTarget <= 75)', () => {
       expect(evaluatePatrolArrival(40, true, 110)).toBe(true);
       expect(evaluatePatrolArrival(55, true, 130)).toBe(true);
-      expect(evaluatePatrolArrival(55, true, 95)).toBe(true);
+      expect(evaluatePatrolArrival(65, true, 120)).toBe(true); // Killer stopped at corner ~65px away
+      expect(evaluatePatrolArrival(75, true, 95)).toBe(true);
     });
 
     it('rejects arrival when Killer is too far from stand-off or outside interaction radius', () => {
-      // Too far from stand-off
-      expect(evaluatePatrolArrival(56, true, 100)).toBe(false);
+      // Too far from stand-off (> 75)
+      expect(evaluatePatrolArrival(76, true, 100)).toBe(false);
       expect(evaluatePatrolArrival(100, true, 100)).toBe(false);
 
-      // Outside interaction radius
+      // Outside interaction radius (> 130)
       expect(evaluatePatrolArrival(40, true, 131)).toBe(false);
       expect(evaluatePatrolArrival(50, true, 200)).toBe(false);
     });
@@ -705,7 +712,337 @@ describe('Generator Stand-off Line-of-Sight & Wall Clearance (CORREÇÃO CRÍTIC
     expect(typeof standOff.x).toBe('number');
     expect(typeof standOff.y).toBe('number');
   });
+
+  it('discards strangled candidate faces where distance to wall is less than 90px and selects open room face', () => {
+    const grid = createEmptyGrid();
+    // Parede sólida ao Sul do gerador na row 7 (y de 448 a 511)
+    for (let c = 0; c < cols; c++) {
+      grid[7][c] = 1;
+    }
+
+    // Gerador posicionado na row 5 (centro: x=352, y=352)
+    // O ponto de stand-off Sul ficaria em y = 352 + 112 = 464, que fica a apenas 16px da parede na row 7 (y=448)!
+    // 16px < 90px -> Face Sul deve ser descartada como estrangulada
+    // Norte (y = 352 - 112 = 240) é amplo e aberto (distância de parede = Infinity)
+    const gen = { x: 5 * tileSize + 32, y: 5 * tileSize + 32, rotation: 0 };
+
+    // Killer aproximando-se pelo Sul (x=352, y=600)
+    // Sem o filtro de 90px, a face Sul seria escolhida por estar mais próxima do Killer.
+    // Com o filtro de 90px, a face Sul é descartada e a face Norte (ou Leste/Oeste abertas) é selecionada!
+    const standOff = getGeneratorStandOffPoint(gen, { x: 352, y: 600 }, undefined, 112, grid, tileSize, cols, rows);
+
+    // O ponto de stand-off não pode ser a face Sul (y = 464)
+    expect(standOff.y).not.toBe(gen.y + 112);
+
+    // Deve escolher uma das faces amplas e com folga >= 90px (Norte, Leste ou Oeste)
+    const validOpenFaces = [
+      { x: gen.x, y: gen.y - 112 }, // Norte
+      { x: gen.x - 112, y: gen.y }, // Oeste
+      { x: gen.x + 112, y: gen.y }  // Leste
+    ];
+    const isOneOfOpenFaces = validOpenFaces.some(
+      (f) => Math.hypot(f.x - standOff.x, f.y - standOff.y) < 1
+    );
+    expect(isOneOfOpenFaces).toBe(true);
+  });
 });
+
+describe('Killer AI - Watchdog Anti-Stuck Failsafe', () => {
+  function createMockPawn(initialX = 100, initialY = 100): IKillerPawn & { velocities: Array<{ vx: number; vy: number }> } {
+    return {
+      x: initialX,
+      y: initialY,
+      rotation: 0,
+      velocities: [],
+      setVelocity(vx: number, vy: number) {
+        this.velocities.push({ vx, vy });
+      },
+      stopMovement() {
+        this.velocities.push({ vx: 0, vy: 0 });
+      },
+      rotateTowards() {},
+      playAnimation() {},
+      stopAnimation() {},
+      isWalkableTile: () => true,
+      hasLineOfSight: () => false,
+      calculatePath: (_fx, _fy, _tx, _ty, cb) => {
+        cb([{ x: 100, y: 100 }, { x: 200, y: 200 }, { x: 300, y: 300 }]);
+      },
+      renderVisionGraphic() {},
+      renderRouteGraphic() {}
+    };
+  }
+
+  const mockGenerators = [
+    { name: 'Gerador A', x: 2240, y: 960, progress: 20, isCompleted: false },
+    { name: 'Gerador B', x: 320, y: 960, progress: 50, isCompleted: false },
+    { name: 'Gerador C', x: 1280, y: 1664, progress: 0, isCompleted: false }
+  ] as any;
+
+  it('skips current waypoint and applies perpendicular impulse when stuck for >= 400ms', () => {
+    const pawn = createMockPawn(100, 100);
+    const controller = new KillerAIController(pawn);
+    controller.state = 'PATROL';
+    controller.setPathForTesting([
+      { x: 100, y: 100 },
+      { x: 150, y: 100 },
+      { x: 200, y: 100 }
+    ], 0);
+
+    // Inicialização da posição de amostragem
+    controller.handleWatchdogAntiStuck(16, mockGenerators);
+    expect(controller.pathIndex).toBe(0);
+
+    // Amostragem 1: 300ms parado (deslocamento 0 < 8px) -> stuckDuration = 300ms (< 400ms)
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+    expect(controller.pathIndex).toBe(0);
+    expect(pawn.velocities.length).toBe(0);
+
+    // Amostragem 2: mais 300ms parado -> stuckDuration = 600ms (>= 400ms)
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+    // Deve ter pulado para o próximo waypoint
+    expect(controller.pathIndex).toBe(1);
+    // Deve ter aplicado impulso de descolamento perpendicular
+    expect(pawn.velocities.length).toBeGreaterThan(0);
+    const lastVel = pawn.velocities[pawn.velocities.length - 1];
+    expect(Math.hypot(lastVel.vx, lastVel.vy)).toBeCloseTo(75, 1);
+  });
+
+  it('aborts current path and forces advance to next generator after >= 800ms of being stuck', () => {
+    const pawn = createMockPawn(100, 100);
+    const controller = new KillerAIController(pawn);
+    controller.state = 'PATROL';
+    controller.setPathForTesting([
+      { x: 100, y: 100 },
+      { x: 150, y: 100 },
+      { x: 200, y: 100 }
+    ], 0);
+
+    controller.handleWatchdogAntiStuck(16, mockGenerators);
+    // 300ms (stuck = 300ms)
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+    // 300ms (stuck = 600ms -> skips waypoint)
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+    expect(controller.pathIndex).toBe(1);
+
+    // 300ms (stuck = 900ms >= 800ms -> cancels route & forces advanceToNextPatrolGenerator)
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+
+    // stuckDuration deve ser resetado após abortar rota
+    expect(controller.stuckTimer).toBe(0);
+    // A rota deve ter sido recalculada (via pawn.calculatePath mock)
+    expect(controller.path.length).toBeGreaterThan(0);
+  });
+
+  it('resets stuck duration when physical displacement is >= 8px within the sample window', () => {
+    const pawn = createMockPawn(100, 100);
+    const controller = new KillerAIController(pawn);
+    controller.state = 'PATROL';
+
+    controller.handleWatchdogAntiStuck(16, mockGenerators);
+    // 300ms parado -> stuck = 300ms
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+    expect(controller.stuckTimer).toBe(300);
+
+    // Killer se move 15px (>= 8px)
+    pawn.x = 115;
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+
+    // stuckDuration deve ter sido zerado
+    expect(controller.stuckTimer).toBe(0);
+  });
+
+  it('resets and disables watchdog when AI is in non-moving state (e.g. INSPECTING)', () => {
+    const pawn = createMockPawn(100, 100);
+    const controller = new KillerAIController(pawn);
+    controller.state = 'PATROL';
+
+    controller.handleWatchdogAntiStuck(16, mockGenerators);
+    controller.handleWatchdogAntiStuck(300, mockGenerators);
+    expect(controller.stuckTimer).toBe(300);
+
+    // Transiciona para INSPECTING
+    controller.state = 'INSPECTING';
+    controller.handleWatchdogAntiStuck(16, mockGenerators);
+
+    expect(controller.stuckTimer).toBe(0);
+  });
+});
+
+describe('Killer AI - Constant Single Speed (Dead by Daylight Standard)', () => {
+  function createSpeedTestPawn(initialX = 100, initialY = 100, hasLOS = true): IKillerPawn & { velocities: Array<{ vx: number; vy: number }> } {
+    return {
+      x: initialX,
+      y: initialY,
+      rotation: 0,
+      velocities: [],
+      setVelocity(vx: number, vy: number) {
+        this.velocities.push({ vx, vy });
+      },
+      stopMovement() {
+        this.velocities.push({ vx: 0, vy: 0 });
+      },
+      rotateTowards() {},
+      playAnimation() {},
+      stopAnimation() {},
+      isWalkableTile: () => true,
+      hasLineOfSight: () => hasLOS,
+      calculatePath: (_fx, _fy, _tx, _ty, cb) => {
+        cb([{ x: 100, y: 100 }, { x: 200, y: 100 }, { x: 300, y: 100 }]);
+      },
+      renderVisionGraphic() {},
+      renderRouteGraphic() {}
+    };
+  }
+
+  const mockSettings = {
+    ...DEFAULT_DEBUG_SETTINGS,
+    killerSpeed: 4.6, // m/s (276 px/s - padrão DBD)
+    killerAiEnabled: true,
+    detectionRadius: 7.5, // 7.5m (~450 px)
+    survivorActive: true
+  };
+
+  const mockGenerators = [
+    { name: 'Gerador A', x: 1000, y: 1000, progress: 20, isCompleted: false }
+  ] as any;
+
+  it('applies nominal settings.killerSpeed without reduction multiplier during PATROL with direct line of sight', () => {
+    const pawn = createSpeedTestPawn(100, 100, true);
+    const controller = new KillerAIController(pawn);
+    controller.advanceToNextPatrolGenerator(mockGenerators);
+    controller.patrolTarget.set(500, 100);
+
+    const mockPlayerFar = { x: 9999, y: 9999, isActive: true, sprite: { visible: true } } as any;
+    controller.update(16, mockPlayerFar, mockGenerators, mockSettings);
+
+    expect(pawn.velocities.length).toBeGreaterThan(0);
+    const lastVel = pawn.velocities[pawn.velocities.length - 1];
+    const speedMagnitude = Math.hypot(lastVel.vx, lastVel.vy);
+
+    // Deve ser estritamente igual à velocidade nominal em pixels (4.6 * 60 = 276 px/s)
+    expect(speedMagnitude).toBeCloseTo(276, 1);
+  });
+
+  it('applies nominal settings.killerSpeed without reduction multiplier during PATROL following A* path', () => {
+    const pawn = createSpeedTestPawn(100, 100, false); // Sem linha de visão direta
+    const controller = new KillerAIController(pawn);
+    controller.advanceToNextPatrolGenerator(mockGenerators);
+    controller.patrolTarget.set(500, 500);
+    controller.setPathForTesting([
+      { x: 100, y: 100 },
+      { x: 200, y: 100 },
+      { x: 300, y: 100 }
+    ], 1);
+
+    const mockPlayerFar = { x: 9999, y: 9999, isActive: true, sprite: { visible: true } } as any;
+    controller.update(16, mockPlayerFar, mockGenerators, mockSettings);
+
+    expect(pawn.velocities.length).toBeGreaterThan(0);
+    const lastVel = pawn.velocities[pawn.velocities.length - 1];
+    const speedMagnitude = Math.hypot(lastVel.vx, lastVel.vy);
+
+    expect(speedMagnitude).toBeCloseTo(276, 1);
+  });
+
+  it('applies nominal settings.killerSpeed during CHASE with direct line of sight', () => {
+    const pawn = createSpeedTestPawn(100, 100, true);
+    const controller = new KillerAIController(pawn);
+    controller.state = 'CHASE';
+
+    // Jogador a 300px de distância (100 -> 400), superior a minBodyDist (~151px) e dentro do detectionRadius (8.5m = 510px)
+    const mockPlayerNear = { x: 400, y: 100, isActive: true, sprite: { visible: true } } as any;
+    controller.update(16, mockPlayerNear, mockGenerators, { ...mockSettings, detectionRadius: 8.5 });
+
+    expect(pawn.velocities.length).toBeGreaterThan(0);
+    const lastVel = pawn.velocities[pawn.velocities.length - 1];
+    const speedMagnitude = Math.hypot(lastVel.vx, lastVel.vy);
+
+    expect(speedMagnitude).toBeCloseTo(276, 1);
+  });
+
+  it('applies nominal settings.killerSpeed during CHASE following A* path and fallback', () => {
+    const pawn = createSpeedTestPawn(100, 100, false);
+    const controller = new KillerAIController(pawn);
+    controller.state = 'CHASE';
+    controller.setPathForTesting([
+      { x: 100, y: 100 },
+      { x: 200, y: 100 }
+    ], 1);
+
+    const mockPlayer = { x: 400, y: 200, isActive: true, sprite: { visible: true } } as any;
+    controller.update(16, mockPlayer, mockGenerators, { ...mockSettings, detectionRadius: 8.5 });
+
+    expect(pawn.velocities.length).toBeGreaterThan(0);
+    const lastVel = pawn.velocities[pawn.velocities.length - 1];
+    const speedMagnitude = Math.hypot(lastVel.vx, lastVel.vy);
+
+    expect(speedMagnitude).toBeCloseTo(276, 1);
+  });
+
+  it('guarantees identical constant speed between PATROL and CHASE states (Dead by Daylight standard)', () => {
+    // 1. Velocidade em PATROL
+    const patrolPawn = createSpeedTestPawn(100, 100, true);
+    const patrolController = new KillerAIController(patrolPawn);
+    patrolController.advanceToNextPatrolGenerator(mockGenerators);
+    patrolController.patrolTarget.set(300, 100);
+    const mockPlayerFar = { x: 9999, y: 9999, isActive: true, sprite: { visible: true } } as any;
+    patrolController.update(16, mockPlayerFar, mockGenerators, mockSettings);
+    const patrolVel = patrolPawn.velocities[patrolPawn.velocities.length - 1];
+    const patrolSpeed = Math.hypot(patrolVel.vx, patrolVel.vy);
+
+    // 2. Velocidade em CHASE
+    const chasePawn = createSpeedTestPawn(100, 100, true);
+    const chaseController = new KillerAIController(chasePawn);
+    chaseController.state = 'CHASE';
+    const mockPlayerNear = { x: 400, y: 100, isActive: true, sprite: { visible: true } } as any;
+    chaseController.update(16, mockPlayerNear, mockGenerators, { ...mockSettings, detectionRadius: 8.5 });
+    const chaseVel = chasePawn.velocities[chasePawn.velocities.length - 1];
+    const chaseSpeed = Math.hypot(chaseVel.vx, chaseVel.vy);
+
+    // As duas velocidades devem ser exatamente iguais (sem aceleração de sprint na perseguição nem marcha lenta em patrulha)
+    expect(patrolSpeed).toBeCloseTo(chaseSpeed, 1);
+    expect(patrolSpeed).toBeCloseTo(276, 1);
+    expect(patrolSpeed).toBeCloseTo(metersToPixels(mockSettings.killerSpeed), 1);
+  });
+});
+
+describe('Metric System Standardization (Dead by Daylight Scale: 1m = 60px)', () => {
+  it('verifies constant scale definition of 60 pixels per meter', () => {
+    expect(PIXELS_PER_METER).toBe(60);
+  });
+
+  it('correctly converts meters to pixels for all core entities', () => {
+    // Survivor Walk: 2.26 m/s -> 135.6 px/s (~135-136 px/s)
+    expect(metersToPixels(2.26)).toBeCloseTo(135.6, 1);
+
+    // Survivor Run: 4.0 m/s -> 240 px/s
+    expect(metersToPixels(4.0)).toBe(240);
+
+    // Killer Speed: 4.6 m/s -> 276 px/s
+    expect(metersToPixels(4.6)).toBe(276);
+
+    // Terror Radius: 32 m -> 1920 px
+    expect(metersToPixels(32)).toBe(1920);
+
+    // Detection Radius: 7.5 m -> 450 px
+    expect(metersToPixels(7.5)).toBe(450);
+  });
+
+  it('correctly converts pixels to meters with 1 decimal precision', () => {
+    expect(pixelsToMeters(60)).toBe(1.0);
+    expect(pixelsToMeters(240)).toBe(4.0);
+    expect(pixelsToMeters(276)).toBe(4.6);
+    expect(pixelsToMeters(1920)).toBe(32.0);
+    expect(pixelsToMeters(850)).toBe(14.2);
+  });
+
+  it('formats map dimensions in pixels and meters according to specification', () => {
+    const formatted = formatMapDimensionsMetric(5120, 3840);
+    expect(formatted).toBe('5120x3840 px (85.3m x 64.0m)');
+  });
+});
+
 
 
 

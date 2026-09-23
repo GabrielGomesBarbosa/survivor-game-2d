@@ -10,55 +10,61 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { AudioManager, calculateTerrorCadence, calculateTerrorDrone } from '../src/audio/AudioManager';
 
 describe('AudioManager - Terror Radius Proximity Math', () => {
-  describe('Camada 1: Batimento Cardíaco Reativo (< 500px)', () => {
-    it('deactivates heartbeat when distance is >= 500px', () => {
-      const at500 = calculateTerrorCadence(500);
-      expect(at500.active).toBe(false);
-      expect(at500.volume).toBe(0);
+  describe('Camada 1: Batimento Cardíaco Reativo (< 800px)', () => {
+    it('deactivates heartbeat when distance is >= 800px', () => {
+      const at800 = calculateTerrorCadence(800);
+      expect(at800.active).toBe(false);
+      expect(at800.volume).toBe(0);
 
-      const at700 = calculateTerrorCadence(700);
-      expect(at700.active).toBe(false);
-      expect(at700.volume).toBe(0);
+      const at900 = calculateTerrorCadence(900);
+      expect(at900.active).toBe(false);
+      expect(at900.volume).toBe(0);
     });
 
-    it('activates heartbeat when distance is < 500px', () => {
-      const at499 = calculateTerrorCadence(499);
-      expect(at499.active).toBe(true);
-      expect(at499.volume).toBeGreaterThan(0);
-      expect(at499.intervalMs).toBeLessThanOrEqual(1000);
+    it('activates heartbeat when distance is < 800px', () => {
+      const at799 = calculateTerrorCadence(799);
+      expect(at799.active).toBe(true);
+      expect(at799.volume).toBeGreaterThan(0);
+      expect(at799.intervalMs).toBeLessThanOrEqual(1100);
+
+      // At 714px (reported edge-case distance), heartbeat is active with calm cadence (~1014ms)
+      const at714 = calculateTerrorCadence(714);
+      expect(at714.active).toBe(true);
+      expect(at714.intervalMs).toBeCloseTo(1014, 0); // ~59 BPM
+      expect(at714.volume).toBeGreaterThan(0.1);
     });
 
-    it('calibrates cadence: 500px is ~60 BPM (1000ms) and 200px is ~140 BPM (~428.6ms)', () => {
-      const at500 = calculateTerrorCadence(499.9);
-      expect(at500.intervalMs).toBeCloseTo(1000, 0); // ~60 BPM
+    it('calibrates cadence: 800px is ~55 BPM (1100ms) and 100px is ~150 BPM (400ms)', () => {
+      const at800 = calculateTerrorCadence(799.9);
+      expect(at800.intervalMs).toBeCloseTo(1100, 0); // ~55 BPM
 
-      const at200 = calculateTerrorCadence(200);
-      expect(at200.intervalMs).toBeCloseTo(428.6, 1); // ~140 BPM
+      const at100 = calculateTerrorCadence(100);
+      expect(at100.intervalMs).toBeCloseTo(400, 1); // ~150 BPM
 
-      // Ponto médio (350px)
-      const at350 = calculateTerrorCadence(350);
-      expect(at350.intervalMs).toBeCloseTo(714.3, 1); // ~84 BPM
+      // Ponto intermediário (450px: t = 0.5 -> 750ms / 80 BPM)
+      const at450 = calculateTerrorCadence(450);
+      expect(at450.intervalMs).toBeCloseTo(750, 1); // ~80 BPM
     });
 
-    it('accelerates cadence monotonically as distance decreases from 500px to 200px', () => {
-      const dist450 = calculateTerrorCadence(450);
-      const dist350 = calculateTerrorCadence(350);
-      const dist250 = calculateTerrorCadence(250);
-      const dist200 = calculateTerrorCadence(200);
+    it('accelerates cadence monotonically as distance decreases from 800px to 100px', () => {
+      const dist750 = calculateTerrorCadence(750);
+      const dist500 = calculateTerrorCadence(500);
+      const dist300 = calculateTerrorCadence(300);
+      const dist150 = calculateTerrorCadence(150);
 
-      expect(dist450.intervalMs).toBeGreaterThan(dist350.intervalMs);
-      expect(dist350.intervalMs).toBeGreaterThan(dist250.intervalMs);
-      expect(dist250.intervalMs).toBeGreaterThan(dist200.intervalMs);
+      expect(dist750.intervalMs).toBeGreaterThan(dist500.intervalMs);
+      expect(dist500.intervalMs).toBeGreaterThan(dist300.intervalMs);
+      expect(dist300.intervalMs).toBeGreaterThan(dist150.intervalMs);
     });
 
-    it('modulates volume proportionally with proximity (0.15 at 500px up to 0.45 at 200px)', () => {
-      const at500 = calculateTerrorCadence(499.9);
-      const at350 = calculateTerrorCadence(350);
-      const at200 = calculateTerrorCadence(200);
+    it('modulates volume proportionally with proximity (0.08 at 800px up to 0.45 at 100px)', () => {
+      const at800 = calculateTerrorCadence(799.9);
+      const at450 = calculateTerrorCadence(450);
+      const at100 = calculateTerrorCadence(100);
 
-      expect(at500.volume).toBeCloseTo(0.15, 1);
-      expect(at350.volume).toBeCloseTo(0.30, 2);
-      expect(at200.volume).toBeCloseTo(0.45, 2);
+      expect(at800.volume).toBeCloseTo(0.08, 1);
+      expect(at450.volume).toBeCloseTo(0.265, 2);
+      expect(at100.volume).toBeCloseTo(0.45, 2);
     });
   });
 

@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
-import { formatGeneratorsHudText, calculateZoomCompensationScale } from '../utils/gameLogic';
+import { formatGeneratorsHudText, calculateZoomCompensationScale, pixelsToMeters } from '../utils/gameLogic';
 import { calculateTerrorCadence } from '../audio/AudioManager';
+import { TERROR_RADIUS_MAX } from '../config/constants';
 
 /**
  * @class TelemetryHUD
@@ -163,7 +164,14 @@ export class TelemetryHUD {
     }
 
     if (this.hudKillerDist) {
-      this.hudKillerDist.textContent = killerDist || '--';
+      let formattedDist = killerDist || '--';
+      if (typeof formattedDist === 'string' && formattedDist.endsWith('px')) {
+        const px = parseFloat(formattedDist);
+        if (!Number.isNaN(px)) {
+          formattedDist = `${pixelsToMeters(px).toFixed(1)}m`;
+        }
+      }
+      this.hudKillerDist.textContent = formattedDist;
     }
 
     if (this.hudGensVal) {
@@ -267,18 +275,18 @@ export class TelemetryHUD {
   ): void {
     if (!this.heartContainer || !this.vignetteGraphics) return;
 
-    if (isSpectator || distanceToKiller > 500 || !enabled || Number.isNaN(distanceToKiller)) {
+    if (isSpectator || distanceToKiller >= TERROR_RADIUS_MAX || !enabled || Number.isNaN(distanceToKiller)) {
       this.stopHeartbeatVisual();
       return;
     }
 
-    // Intensidade normalizada (0 no limiar de 500px até 1 no contato imediato a 0px)
-    const factor = Math.max(0, Math.min(1, 1 - (distanceToKiller / 500)));
+    // Intensidade normalizada (0 no limiar de TERROR_RADIUS_MAX até 1 no contato imediato a 0px)
+    const factor = Math.max(0, Math.min(1, 1 - (distanceToKiller / TERROR_RADIUS_MAX)));
 
-    // Opacidade base varia suavemente de 0.3 a 1.0 conforme a proximidade
-    this.currentBaseAlpha = 0.3 + 0.7 * factor;
+    // Opacidade base varia suavemente de 0.25 no limiar de 800px até 1.0 a 0px
+    this.currentBaseAlpha = 0.25 + 0.75 * factor;
 
-    // Frequência do pulso matematicamente sincronizada ao AudioManager (~60 BPM a 500px até ~140 BPM a <200px)
+    // Frequência do pulso matematicamente sincronizada ao AudioManager (~55 BPM a 800px até ~150 BPM a <=100px)
     const cadence = calculateTerrorCadence(distanceToKiller);
     this.currentIntervalMs = cadence.intervalMs;
 

@@ -6,7 +6,7 @@
 
 import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
-import { evaluatePlayerMovementState, clampCircleAgainstNavGrid } from '../utils/gameLogic';
+import { evaluatePlayerMovementState, clampCircleAgainstNavGrid, metersToPixels } from '../utils/gameLogic';
 
 export class Player {
   public sprite: Phaser.Physics.Arcade.Sprite;
@@ -260,7 +260,8 @@ export class Player {
 
     if (isInputMoving) {
       const moveVector = new Phaser.Math.Vector2(moveX, moveY).normalize();
-      const intendedSpeed = isSprinting ? settings.runSpeed : settings.walkSpeed;
+      const intendedSpeedMeters = isSprinting ? settings.runSpeed : settings.walkSpeed;
+      const intendedSpeed = metersToPixels(intendedSpeedMeters);
       this.sprite.setVelocity(moveVector.x * intendedSpeed, moveVector.y * intendedSpeed);
     } else {
       this.sprite.setVelocity(0, 0);
@@ -438,9 +439,10 @@ export class Player {
       this.sampleDist = 0;
       this.sampleTime = 0;
     } else {
-      const intendedSpeed = this.isSprintingInput
-        ? (this.settings?.runSpeed ?? 240)
-        : (this.settings?.walkSpeed ?? 140);
+      const intendedSpeedMeters = this.isSprintingInput
+        ? (this.settings?.runSpeed ?? 4.0)
+        : (this.settings?.walkSpeed ?? 2.26);
+      const intendedSpeed = metersToPixels(intendedSpeedMeters);
       const strafeSpeed = (pushesIntoWallX || pushesIntoWallY) ? intendedSpeed * Math.SQRT1_2 : intendedSpeed;
 
       if (inputChanged || frameDist > 0.05) {

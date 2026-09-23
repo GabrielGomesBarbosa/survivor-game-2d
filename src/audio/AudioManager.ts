@@ -10,6 +10,9 @@
  *   2) Drone Sombrio Dissonante (osciladores desafinados a 80Hz e 83Hz com filtro lowpass progressivo para distâncias < 250px ou CHASE)
  */
 
+import { TERROR_RADIUS_MAX } from '../config/constants';
+export { TERROR_RADIUS_MAX };
+
 /**
  * Calcula a cadência e intensidade do batimento cardíaco (Camada 1) a partir da distância até o Killer.
  * @param distanceToKiller Distância euclidiana em pixels entre Survivor e Killer.
@@ -20,18 +23,18 @@ export function calculateTerrorCadence(distanceToKiller: number): {
   volume: number;
   active: boolean;
 } {
-  if (distanceToKiller >= 500) {
-    return { intervalMs: 1000, volume: 0, active: false };
+  if (distanceToKiller >= TERROR_RADIUS_MAX) {
+    return { intervalMs: 1100, volume: 0, active: false };
   }
-  const minThreshold = 200;
-  const maxThreshold = 500;
+  const minThreshold = 100;
+  const maxThreshold = TERROR_RADIUS_MAX;
   const clamped = Math.max(minThreshold, Math.min(maxThreshold, distanceToKiller));
-  const t = (clamped - minThreshold) / (maxThreshold - minThreshold); // 0 (<= 200px) a 1 (500px)
+  const t = (clamped - minThreshold) / (maxThreshold - minThreshold); // 0 (<= 100px) a 1 (800px)
 
-  // 500px: ~60 BPM (intervalo de 1000ms) | 200px: ~140 BPM (intervalo de ~428.6ms)
-  const intervalMs = 428.6 + t * (1000 - 428.6);
-  // Volume proporcional: ganho aumenta conforme a distância diminui (0.45 perto, 0.15 no limiar)
-  const volume = 0.45 - t * (0.45 - 0.15);
+  // 800px: ~55 BPM (intervalo de 1100ms) | 100px: ~150 BPM (intervalo de 400ms)
+  const intervalMs = 400 + t * (1100 - 400);
+  // Volume proporcional: ganho suave de 0.08 no limiar de 800px até 0.45 em proximidade imediata
+  const volume = 0.45 - t * (0.45 - 0.08);
 
   return { intervalMs, volume, active: true };
 }
@@ -507,9 +510,9 @@ export class AudioManager {
     }
 
     // -------------------------------------------------------------
-    // Camada 1: Batimento Cardíaco Reativo (< 500px)
+    // Camada 1: Batimento Cardíaco Reativo (< TERROR_RADIUS_MAX)
     // -------------------------------------------------------------
-    if (distanceToKiller < 500) {
+    if (distanceToKiller < TERROR_RADIUS_MAX) {
       this.terrorRadiusActive = true;
       const cadence = calculateTerrorCadence(distanceToKiller);
 

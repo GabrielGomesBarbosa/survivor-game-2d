@@ -83,12 +83,18 @@ export class DebugPanel {
       'Habilita ou desabilita o Survivor no mapa (Modo Espectador do Killer). Quando desmarcado, torna o Survivor invisível, desativa colisão física e faz a IA do Killer ignorá-lo.'
     );
     this.attachTooltip(
-      speedsFolder.add(this.settings, 'walkSpeed', 50, 400, 5).name('Walk Speed'),
-      'Velocidade base de caminhada do Player em pixels/segundo (WASD normal).'
+      speedsFolder
+        .add(this.settings, 'walkSpeed', 1.0, 3.5, 0.1)
+        .name('Walk Speed (m/s)')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Velocidade base de caminhada do Player em metros/segundo (WASD normal, ~2.3 m/s).'
     );
     this.attachTooltip(
-      speedsFolder.add(this.settings, 'runSpeed', 100, 600, 5).name('Run Speed'),
-      'Velocidade máxima de corrida ao pressionar a tecla Shift em pixels/segundo.'
+      speedsFolder
+        .add(this.settings, 'runSpeed', 2.5, 6.0, 0.1)
+        .name('Run Speed (m/s)')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Velocidade máxima de corrida ao pressionar a tecla Shift em metros/segundo (padrão DBD 4.0 m/s).'
     );
     this.attachTooltip(
       speedsFolder
@@ -188,15 +194,17 @@ export class DebugPanel {
     const killerFolder = this.gui.addFolder('Killer (IA)');
     this.attachTooltip(
       killerFolder
-        .add(this.settings, 'killerSpeed', 80, 300, 5)
-        .name('Killer Speed'),
-      'Velocidade de corrida do Assassino no estado de perseguição (CHASE) em px/s.'
+        .add(this.settings, 'killerSpeed', 3.0, 6.5, 0.1)
+        .name('Killer Speed (m/s)')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Velocidade constante única do Assassino em todos os estados de deslocamento (PATROL, ALERT, CHASE) em metros/segundo (padrão DBD 4.6 m/s).'
     );
     this.attachTooltip(
       killerFolder
-        .add(this.settings, 'detectionRadius', 100, 600, 10)
-        .name('Detection Radius'),
-      'Distância máxima de percepção na qual o Killer avista o Player e inicia perseguição.'
+        .add(this.settings, 'detectionRadius', 2.0, 20.0, 0.5)
+        .name('Detection Radius (m)')
+        .onChange(() => this.saveSettingsToStorage()),
+      'Distância máxima de percepção em metros na qual o Killer avista o Player e inicia perseguição (padrão ~7.5m).'
     );
     this.attachTooltip(
       killerFolder
@@ -572,6 +580,20 @@ export class DebugPanel {
             (this.settings as any)[key] = parsed[key];
           }
         });
+
+        // Migração automática de valores legados em pixels para a nova escala métrica (m e m/s)
+        if (typeof this.settings.walkSpeed === 'number' && this.settings.walkSpeed > 10) {
+          this.settings.walkSpeed = Number((this.settings.walkSpeed / 60).toFixed(2));
+        }
+        if (typeof this.settings.runSpeed === 'number' && this.settings.runSpeed > 10) {
+          this.settings.runSpeed = Number((this.settings.runSpeed / 60).toFixed(2));
+        }
+        if (typeof this.settings.killerSpeed === 'number' && this.settings.killerSpeed > 10) {
+          this.settings.killerSpeed = Number((this.settings.killerSpeed / 60).toFixed(2));
+        }
+        if (typeof this.settings.detectionRadius === 'number' && this.settings.detectionRadius > 25) {
+          this.settings.detectionRadius = Number((this.settings.detectionRadius / 60).toFixed(1));
+        }
       }
     } catch (e) {
       console.warn('Erro ao carregar debugSettings do localStorage:', e);

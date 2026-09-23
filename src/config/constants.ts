@@ -12,6 +12,20 @@ export const ROWS = 60;
 export const STORAGE_KEY = 'horror_topdown_debug_settings';
 export const GENERATOR_CANDIDATES_STORAGE_KEY = 'horror2d_generator_candidates';
 
+/**
+ * Constantes e funções de conversão para o Sistema Métrico (Padrão Dead by Daylight).
+ * Escala: 1 metro = 60 pixels.
+ */
+export const PIXELS_PER_METER = 60;
+export const metersToPixels = (meters: number): number => meters * PIXELS_PER_METER;
+export const pixelsToMeters = (pixels: number): number => Number((pixels / PIXELS_PER_METER).toFixed(1));
+export const TERROR_RADIUS_METERS = 32;
+
+/**
+ * Raio máximo de alcance do Raio de Terror em pixels (unificado entre Web Audio API e HUD).
+ */
+export const TERROR_RADIUS_MAX = 800;
+
 export const GENERATOR_DEFS = [
   { id: 'gen-1', name: 'Gerador A', roomName: 'Ala Nordeste (Laboratório)', x: 4096, y: 768 },
   { id: 'gen-2', name: 'Gerador B', roomName: 'Ala Sudoeste (Enfermaria)', x: 1024, y: 3072 },
@@ -62,8 +76,8 @@ export interface DebugSettings {
  * Valores padrão calibrados de fábrica para a Sandbox.
  */
 export const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
-  walkSpeed: 140,
-  runSpeed: 240,
+  walkSpeed: 2.26, // m/s (~135 px/s)
+  runSpeed: 4.0,   // m/s (240 px/s - padrão Dead by Daylight)
   turnSpeed: 18,
   instantTurn: false,
   playerScale: 0.25,
@@ -73,8 +87,8 @@ export const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   runAnimFrameRate: 12,
   cameraZoom: 1.0,
   freeCam: false,
-  killerSpeed: 170,
-  detectionRadius: 280,
+  killerSpeed: 4.6, // m/s (276 px/s - padrão Dead by Daylight, velocidade constante única)
+  detectionRadius: 7.5, // metros (~450 px)
   inspectionTime: 2.5,
   inspectionDistance: 110,
   showKillerVision: true,
@@ -121,9 +135,9 @@ export const DEFAULT_MONITOR_STATE: MonitorState = {
   playerX: '2560',
   playerY: '1920',
   currentTile: '[40, 30]',
-  worldSize: `${WORLD_WIDTH} x ${WORLD_HEIGHT} px (${COLS} x ${ROWS} tiles)`,
+  worldSize: `${WORLD_WIDTH}x${WORLD_HEIGHT} px (${pixelsToMeters(WORLD_WIDTH).toFixed(1)}m x ${pixelsToMeters(WORLD_HEIGHT).toFixed(1)}m)`,
   killerState: 'PATROL',
-  killerDist: '0px',
+  killerDist: '0.0m',
   fps: 0
 };
 

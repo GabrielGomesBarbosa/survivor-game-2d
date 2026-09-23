@@ -8,7 +8,7 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, metersToPixels } from '../utils/gameLogic';
 import { Player } from './Player';
 
 import { Generator } from './Generator';
@@ -439,7 +439,7 @@ export class Killer implements IKillerPawn {
 
     const kx = this.sprite.x;
     const ky = this.sprite.y;
-    const detectionRadius = settings.detectionRadius;
+    const detectionRadius = metersToPixels(settings.detectionRadius);
     const loseRadius = detectionRadius * 1.5;
 
     this.visionGraphic.lineStyle(1.5, 0xf0c674, 0.25);

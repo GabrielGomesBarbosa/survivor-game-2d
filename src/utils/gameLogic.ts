@@ -6,6 +6,26 @@
 
 import defaultSpawnCandidatesJson from '../data/generatorSpawnCandidates.json';
 
+/**
+ * Constantes e funções de conversão para o Sistema Métrico (Padrão Dead by Daylight).
+ * Escala: 1 metro = 60 pixels.
+ */
+export const PIXELS_PER_METER = 60;
+export const metersToPixels = (meters: number): number => meters * PIXELS_PER_METER;
+export const pixelsToMeters = (pixels: number): number => Number((pixels / PIXELS_PER_METER).toFixed(1));
+
+/**
+ * Formata as dimensões do mapa em pixels e metros.
+ * @param widthPixels Largura total em pixels (padrão: 5120)
+ * @param heightPixels Altura total em pixels (padrão: 3840)
+ * @returns '5120x3840 px (85.3m x 64.0m)'
+ */
+export function formatMapDimensionsMetric(widthPixels: number = 5120, heightPixels: number = 3840): string {
+  const wMeters = pixelsToMeters(widthPixels).toFixed(1);
+  const hMeters = pixelsToMeters(heightPixels).toFixed(1);
+  return `${widthPixels}x${heightPixels} px (${wMeters}m x ${hMeters}m)`;
+}
+
 export type SkillCheckRating = 'GREAT' | 'GOOD' | 'FAIL';
 
 /**
@@ -623,7 +643,8 @@ export function getGeneratorStandOffPoint(
   navGrid?: number[][],
   tileSize: number = 64,
   cols: number = 80,
-  rows: number = 60
+  rows: number = 60,
+  minWallClearance: number = 90
 ): { x: number; y: number } {
   let effectiveNavGrid = navGrid;
   let effectiveIsWalkable: ((x: number, y: number) => boolean) | undefined = undefined;
@@ -708,6 +729,38 @@ export function getGeneratorStandOffPoint(
       if (losBlocked) {
         continue;
       }
+
+      // 4. Validação de Folga Mínima de Parede (Descarte de Faces Estranguladas):
+      // Se a distância entre o ponto de stand-off e a parede sólida mais próxima for menor que minWallClearance (90px),
+      // descarta a face da lista prioritária para evitar que o Killer navegue em vãos estrangulados contra rodapés.
+      if (minWallClearance > 0) {
+        const checkRadius = Math.ceil(minWallClearance / tileSize);
+        let wallTooClose = false;
+
+        for (let dr = -checkRadius; dr <= checkRadius; dr++) {
+          for (let dc = -checkRadius; dc <= checkRadius; dc++) {
+            const sr = candRow + dr;
+            const sc = candCol + dc;
+            if (sr < 0 || sr >= gridRows || sc < 0 || sc >= gridCols) {
+              continue;
+            }
+            if (effectiveNavGrid[sr][sc] === 1 && !ownTiles.has(`${sc},${sr}`)) {
+              const nearestX = Math.max(sc * tileSize, Math.min(c.x, (sc + 1) * tileSize));
+              const nearestY = Math.max(sr * tileSize, Math.min(c.y, (sr + 1) * tileSize));
+              const dist = Math.hypot(c.x - nearestX, c.y - nearestY);
+              if (dist < minWallClearance) {
+                wallTooClose = true;
+                break;
+              }
+            }
+          }
+          if (wallTooClose) break;
+        }
+
+        if (wallTooClose) {
+          continue;
+        }
+      }
     }
 
     validCandidates.push(c);
@@ -726,7 +779,7 @@ export function getGeneratorStandOffPoint(
     return { x: best.x, y: best.y };
   };
 
-  // Se há candidatos com linha de visão totalmente desobstruída e célula livre
+  // Se há candidatos com linha de visão totalmente desobstruída, célula livre e folga de parede
   if (validCandidates.length > 0) {
     if (fromPos) {
       return selectClosest(validCandidates, fromPos);
@@ -734,7 +787,36 @@ export function getGeneratorStandOffPoint(
     return { x: validCandidates[0].x, y: validCandidates[0].y };
   }
 
-  // Fallback 1: Candidatos com célula livre/transitável
+  // Fallback 1: Candidatos com linha de visão desobstruída e célula livre (sem restrição estrita de folga de 90px)
+  const losCandidates = candidates.filter((c) => {
+    const cCol = Math.floor(c.x / tileSize);
+    const cRow = Math.floor(c.y / tileSize);
+    if (cCol < 0 || cCol >= gridCols || cRow < 0 || cRow >= gridRows) return false;
+    if (effectiveIsWalkable && !effectiveIsWalkable(c.x, c.y)) return false;
+    if (effectiveNavGrid) {
+      if (effectiveNavGrid[cRow][cCol] === 1 || ownTiles.has(`${cCol},${cRow}`)) return false;
+      const numSteps = Math.max(1, Math.ceil(standOffDist / 8));
+      for (let i = 0; i <= numSteps; i++) {
+        const t = i / numSteps;
+        const sx = gen.x + (c.x - gen.x) * t;
+        const sy = gen.y + (c.y - gen.y) * t;
+        const sc = Math.floor(sx / tileSize);
+        const sr = Math.floor(sy / tileSize);
+        if (sr < 0 || sr >= gridRows || sc < 0 || sc >= gridCols) return false;
+        if (effectiveNavGrid[sr][sc] === 1 && !ownTiles.has(`${sc},${sr}`)) return false;
+      }
+    }
+    return true;
+  });
+
+  if (losCandidates.length > 0) {
+    if (fromPos) {
+      return selectClosest(losCandidates, fromPos);
+    }
+    return { x: losCandidates[0].x, y: losCandidates[0].y };
+  }
+
+  // Fallback 2: Candidatos com célula livre/transitável
   const walkableCandidates = candidates.filter((c) => {
     const cCol = Math.floor(c.x / tileSize);
     const cRow = Math.floor(c.y / tileSize);
@@ -751,7 +833,7 @@ export function getGeneratorStandOffPoint(
     return { x: walkableCandidates[0].x, y: walkableCandidates[0].y };
   }
 
-  // Fallback 2: Candidatos dentro do mapa
+  // Fallback 3: Candidatos dentro do mapa
   const inBoundsCandidates = candidates.filter((c) => {
     const cCol = Math.floor(c.x / tileSize);
     const cRow = Math.floor(c.y / tileSize);
@@ -1289,7 +1371,7 @@ export class GeneratorPatrolManager {
  * Avalia se o Killer alcançou a tolerância de chegada ao alvo de patrulha:
  * - Para geradores:
  *   - Chegada confirmada se 'distToTarget <= 32' (alcançou o ponto livre de stand-off); OU
- *   - se estiver dentro do raio de interação ('distToGen <= 130') e adjacente ao stand-off ('distToTarget <= 55').
+ *   - se estiver dentro do raio de interação ('distToGen <= 130') e adjacente ao stand-off ('distToTarget <= 75').
  * - Para salas principais:
  *   - 'distToTarget <= 40' (centro do cômodo).
  */
@@ -1299,7 +1381,7 @@ export function evaluatePatrolArrival(
   distToGen?: number
 ): boolean {
   if (isTargetingGenerator) {
-    return distToTarget <= 32 || ((distToGen !== undefined && distToGen <= 130) && distToTarget <= 55);
+    return distToTarget <= 32 || ((distToGen !== undefined && distToGen <= 130) && distToTarget <= 75);
   }
   return distToTarget <= 40;
 }

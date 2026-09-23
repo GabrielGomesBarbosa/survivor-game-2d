@@ -8,7 +8,7 @@
  * - Desativação imediata em Modo Espectador ou toggle desligado
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TelemetryHUD } from '../src/ui/TelemetryHUD';
 import { calculateTerrorCadence } from '../src/audio/AudioManager';
 
@@ -148,44 +148,52 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
     });
   });
 
-  describe('2. Visibilidade e Limiar de 500px', () => {
-    it('remains hidden (alpha = 0) and not beating when distance > 500px', () => {
+  describe('2. Visibilidade e Limiar de 800px (TERROR_RADIUS_MAX)', () => {
+    it('remains hidden (alpha = 0) and not beating when distance >= 800px', () => {
       const hud = new TelemetryHUD(mockScene);
-      hud.updateHeartbeatVisual(600, false, true);
+      hud.updateHeartbeatVisual(850, false, true);
 
       expect(hud.heartbeatContainer.alpha).toBe(0);
       expect(hud.isHeartbeatBeating).toBe(false);
       expect(hud.screenVignette.alpha).toBe(0);
     });
 
-    it('remains hidden at exact boundary distance = 500.1px', () => {
+    it('remains hidden at exact boundary distance = 800.1px', () => {
       const hud = new TelemetryHUD(mockScene);
-      hud.updateHeartbeatVisual(500.1, false, true);
+      hud.updateHeartbeatVisual(800.1, false, true);
 
       expect(hud.heartbeatContainer.alpha).toBe(0);
       expect(hud.isHeartbeatBeating).toBe(false);
     });
 
-    it('becomes visible when distance <= 500px', () => {
+    it('becomes visible when distance < 800px (e.g. 714px and 450px)', () => {
       const hud = new TelemetryHUD(mockScene);
-      hud.updateHeartbeatVisual(450, false, true);
+      hud.updateHeartbeatVisual(714, false, true);
 
       expect(hud.heartbeatContainer.alpha).toBeGreaterThan(0);
       expect(hud.isHeartbeatBeating).toBe(true);
       expect(addedTweens.length).toBeGreaterThan(0);
+
+      const hud2 = new TelemetryHUD(mockScene);
+      hud2.updateHeartbeatVisual(450, false, true);
+      expect(hud2.heartbeatContainer.alpha).toBeGreaterThan(0);
+      expect(hud2.isHeartbeatBeating).toBe(true);
     });
   });
 
   describe('3. Modulação de Opacidade e Escala', () => {
-    it('calculates base alpha: 0.3 at 500px up to 1.0 at 0px', () => {
+    it('calculates base alpha: ~0.25 at 800px up to 1.0 at 0px (and ~0.33 at 714px)', () => {
       const hud = new TelemetryHUD(mockScene);
 
-      hud.updateHeartbeatVisual(500, false, true);
-      expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.3, 2);
+      hud.updateHeartbeatVisual(799, false, true);
+      expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.25, 2);
 
-      hud.updateHeartbeatVisual(250, false, true);
-      // factor = 1 - (250/500) = 0.5 -> 0.3 + 0.7 * 0.5 = 0.65
-      expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.65, 2);
+      hud.updateHeartbeatVisual(714, false, true);
+      expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.33, 2);
+
+      hud.updateHeartbeatVisual(400, false, true);
+      // factor = 1 - (400/800) = 0.5 -> 0.25 + 0.75 * 0.5 = 0.625
+      expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.625, 2);
 
       hud.updateHeartbeatVisual(0, false, true);
       expect(hud.heartbeatBaseAlpha).toBeCloseTo(1.0, 2);
@@ -312,6 +320,44 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
       expect(heartContainerMock.destroy).toHaveBeenCalled();
       expect(vignetteMock.destroy).toHaveBeenCalled();
       expect(alertContainerMock.destroy).toHaveBeenCalled();
+    });
+  });
+
+  describe('8. Telemetria DOM Superior e Conversão Métrica', () => {
+    let mockElements: Record<string, { textContent: string; className: string; style: Record<string, string> }>;
+    const originalDocument = globalThis.document;
+
+    beforeEach(() => {
+      mockElements = {
+        'hud-fps-val': { textContent: '', className: '', style: {} },
+        'hud-fps-dot': { textContent: '', className: '', style: {} },
+        'hud-killer-state': { textContent: '', className: '', style: {} },
+        'hud-killer-dist': { textContent: '', className: '', style: {} },
+        'hud-gens-val': { textContent: '', className: '', style: {} }
+      };
+
+      globalThis.document = {
+        getElementById: vi.fn((id: string) => mockElements[id] || null)
+      } as any;
+    });
+
+    afterEach(() => {
+      globalThis.document = originalDocument;
+    });
+
+    it('displays killer distance in meters when passed a metric string', () => {
+      const hud = new TelemetryHUD(mockScene);
+      hud.update(60, 'PATROL', '14.2m', 0, 5, 5);
+
+      expect(mockElements['hud-killer-dist'].textContent).toBe('14.2m');
+    });
+
+    it('automatically converts legacy pixel distance strings to meters', () => {
+      const hud = new TelemetryHUD(mockScene);
+      hud.update(60, 'CHASE', '240px', 1, 5, 5);
+
+      // 240px / 60 = 4.0m
+      expect(mockElements['hud-killer-dist'].textContent).toBe('4.0m');
     });
   });
 });

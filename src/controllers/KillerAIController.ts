@@ -5,12 +5,42 @@
  * de ronda entre geradores incompletos com pausa de inspeção e detecção prioritária do jogador.
  */
 
-import Phaser from 'phaser';
 import { DebugSettings } from '../config/constants';
-import { Player } from '../entities/Player';
-import { Generator } from '../entities/Generator';
-import { GeneratorPatrolManager, PatrolTarget, MAJOR_FACILITY_ROOMS, getGeneratorStandOffPoint, evaluateKillerAiState, isPlayerDetectableByKiller, evaluatePatrolArrival, shouldKillerKickGenerator } from '../utils/gameLogic';
+import type { Player } from '../entities/Player';
+import type { Generator } from '../entities/Generator';
+import {
+  GeneratorPatrolManager,
+  PatrolTarget,
+  MAJOR_FACILITY_ROOMS,
+  getGeneratorStandOffPoint,
+  evaluateKillerAiState,
+  isPlayerDetectableByKiller,
+  evaluatePatrolArrival,
+  shouldKillerKickGenerator,
+  wrapAngle,
+  metersToPixels
+} from '../utils/gameLogic';
 import { IKillerController } from './KillerController';
+
+export class Vector2D {
+  public x: number;
+  public y: number;
+  constructor(x = 0, y = 0) {
+    this.x = x;
+    this.y = y;
+  }
+  set(x: number, y: number): this {
+    this.x = x;
+    this.y = y;
+    return this;
+  }
+}
+
+function normalizeVec(dx: number, dy: number): { x: number; y: number } {
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: 0, y: 0 };
+  return { x: dx / len, y: dy / len };
+}
 
 export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO' | 'STANDBY';
 
@@ -44,7 +74,7 @@ export class KillerAIController implements IKillerController {
   public patrolManager: GeneratorPatrolManager;
 
   // Alvo e caminhos
-  public patrolTarget: Phaser.Math.Vector2;
+  public patrolTarget: Vector2D;
   private currentPath: Array<{ x: number; y: number }> = [];
   private currentPathIndex = 0;
   private pathRecalcTimer = 0;
@@ -54,10 +84,17 @@ export class KillerAIController implements IKillerController {
   private isKicking = false;
   private kickTimer = 0;
 
+  // Watchdog Anti-Stuck
+  private stuckSampleTimer = 0;
+  private stuckDuration = 0;
+  private lastSampleX = 0;
+  private lastSampleY = 0;
+  private hasInitializedSamplePos = false;
+
   constructor(pawn: IKillerPawn) {
     this.pawn = pawn;
     this.patrolManager = new GeneratorPatrolManager();
-    this.patrolTarget = new Phaser.Math.Vector2(pawn.x, pawn.y);
+    this.patrolTarget = new Vector2D(pawn.x, pawn.y);
   }
 
   public getState(): string {
@@ -66,6 +103,23 @@ export class KillerAIController implements IKillerController {
 
   public get isKickingGenerator(): boolean {
     return this.isKicking;
+  }
+
+  public get stuckTimer(): number {
+    return this.stuckDuration;
+  }
+
+  public get path(): Array<{ x: number; y: number }> {
+    return this.currentPath;
+  }
+
+  public get pathIndex(): number {
+    return this.currentPathIndex;
+  }
+
+  public setPathForTesting(path: Array<{ x: number; y: number }>, index: number = 0): void {
+    this.currentPath = path;
+    this.currentPathIndex = index;
   }
 
   /**
@@ -107,8 +161,8 @@ export class KillerAIController implements IKillerController {
     );
 
     if (isPlayerDetectable) {
-      const distToPlayer = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, player.x, player.y);
-      const detectionRadius = settings.detectionRadius;
+      const distToPlayer = Math.hypot(player.x - this.pawn.x, player.y - this.pawn.y);
+      const detectionRadius = metersToPixels(settings.detectionRadius);
       const loseRadius = detectionRadius * 1.5;
 
       // 1. Prioridade Absoluta: Detecção do Jogador -> Transição para CHASE
@@ -142,8 +196,10 @@ export class KillerAIController implements IKillerController {
     }
 
     // 2. Execução dos estados da FSM
+    this.handleWatchdogAntiStuck(delta, generators);
+
     if (this.state === 'CHASE' && isPlayerDetectable) {
-      const distToPlayer = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, player.x, player.y);
+      const distToPlayer = Math.hypot(player.x - this.pawn.x, player.y - this.pawn.y);
       this.handleChaseState(delta, player, distToPlayer, settings);
     } else if (this.state === 'INSPECTING') {
       this.handleInspectingState(delta, generators);
@@ -172,7 +228,7 @@ export class KillerAIController implements IKillerController {
    * Estado CHASE: perseguição direta ou contorno via A*.
    */
   private handleChaseState(delta: number, player: Player, distToPlayer: number, settings: DebugSettings): void {
-    const speed = settings.killerSpeed;
+    const speed = metersToPixels(settings.killerSpeed);
     const minBodyDist = settings.hitboxRadius * settings.playerScale * 2.28;
 
     if (distToPlayer <= minBodyDist) {
@@ -180,7 +236,7 @@ export class KillerAIController implements IKillerController {
       this.pawn.stopAnimation(0);
       const dx = player.x - this.pawn.x;
       const dy = player.y - this.pawn.y;
-      const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
       this.pawn.rotateTowards(targetAngle, delta, 14);
       return;
     }
@@ -191,12 +247,12 @@ export class KillerAIController implements IKillerController {
       this.currentPath = [];
       const dx = player.x - this.pawn.x;
       const dy = player.y - this.pawn.y;
-      const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+      const moveVec = normalizeVec(dx, dy);
 
       this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
       this.pawn.playAnimation('run');
 
-      const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
       this.pawn.rotateTowards(targetAngle, delta, 14);
     } else {
       this.pathRecalcTimer += delta;
@@ -210,7 +266,7 @@ export class KillerAIController implements IKillerController {
 
       if (this.currentPath.length > 0) {
         const targetNode = this.currentPath[this.currentPathIndex];
-        const distToNode = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, targetNode.x, targetNode.y);
+        const distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
 
         if (distToNode < 36 && this.currentPathIndex < this.currentPath.length - 1) {
           this.currentPathIndex++;
@@ -226,18 +282,18 @@ export class KillerAIController implements IKillerController {
         const activeNode = this.currentPath[this.currentPathIndex];
         const dx = activeNode.x - this.pawn.x;
         const dy = activeNode.y - this.pawn.y;
-        const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+        const moveVec = normalizeVec(dx, dy);
 
         this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
         this.pawn.playAnimation('run');
 
-        const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
+        const targetAngle = wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
         this.pawn.rotateTowards(targetAngle, delta, 12);
       } else {
         const dx = player.x - this.pawn.x;
         const dy = player.y - this.pawn.y;
-        const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
-        this.pawn.setVelocity(moveVec.x * speed * 0.5, moveVec.y * speed * 0.5);
+        const moveVec = normalizeVec(dx, dy);
+        this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
       }
     }
   }
@@ -280,13 +336,13 @@ export class KillerAIController implements IKillerController {
       return;
     }
 
-    const distToTarget = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y);
+    const distToTarget = Math.hypot(this.patrolTarget.x - this.pawn.x, this.patrolTarget.y - this.pawn.y);
     const isTargetingGenerator = Boolean(
       this.patrolManager.currentDestination && this.patrolManager.currentDestination.type === 'generator'
     );
     const currentDest = this.patrolManager.currentDestination;
     const distToGen = (isTargetingGenerator && currentDest)
-      ? Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, currentDest.x, currentDest.y)
+      ? Math.hypot(currentDest.x - this.pawn.x, currentDest.y - this.pawn.y)
       : distToTarget;
 
     // Chegou ao ponto frontal do gerador (stand-off) ou ao centro do cômodo
@@ -299,7 +355,7 @@ export class KillerAIController implements IKillerController {
       // Inicia inspeção com tempo configurável (inspectionTime, padrão: 2.5s)
       this.state = 'INSPECTING';
       if (isTargetingGenerator && currentDest) {
-        this.baseInspectAngle = Phaser.Math.Angle.Wrap(Math.atan2(currentDest.y - this.pawn.y, currentDest.x - this.pawn.x) - Math.PI / 2);
+        this.baseInspectAngle = wrapAngle(Math.atan2(currentDest.y - this.pawn.y, currentDest.x - this.pawn.x) - Math.PI / 2);
       } else {
         this.baseInspectAngle = this.pawn.rotation;
       }
@@ -323,24 +379,24 @@ export class KillerAIController implements IKillerController {
       return;
     }
 
-    const patrolSpeed = settings.killerSpeed * 0.45;
+    const speed = metersToPixels(settings.killerSpeed);
 
     // Se houver linha direta de visão até a área segura do gerador, caminhar direto
     if (this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y)) {
       this.currentPath = [];
       const dx = this.patrolTarget.x - this.pawn.x;
       const dy = this.patrolTarget.y - this.pawn.y;
-      const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+      const moveVec = normalizeVec(dx, dy);
 
-      this.pawn.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
+      this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
       this.pawn.playAnimation('walk');
 
-      const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(dy, dx) - Math.PI / 2);
+      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
       this.pawn.rotateTowards(targetAngle, delta, 5);
     } else {
       if (this.currentPath.length > 0) {
         const targetNode = this.currentPath[this.currentPathIndex];
-        const distToNode = Phaser.Math.Distance.Between(this.pawn.x, this.pawn.y, targetNode.x, targetNode.y);
+        const distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
 
         if (distToNode < 36 && this.currentPathIndex < this.currentPath.length - 1) {
           this.currentPathIndex++;
@@ -349,12 +405,12 @@ export class KillerAIController implements IKillerController {
         const activeNode = this.currentPath[this.currentPathIndex];
         const dx = activeNode.x - this.pawn.x;
         const dy = activeNode.y - this.pawn.y;
-        const moveVec = new Phaser.Math.Vector2(dx, dy).normalize();
+        const moveVec = normalizeVec(dx, dy);
 
-        this.pawn.setVelocity(moveVec.x * patrolSpeed, moveVec.y * patrolSpeed);
+        this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
         this.pawn.playAnimation('walk');
 
-        const targetAngle = Phaser.Math.Angle.Wrap(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
+        const targetAngle = wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
         this.pawn.rotateTowards(targetAngle, delta, 6);
       } else {
         this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
@@ -445,9 +501,93 @@ export class KillerAIController implements IKillerController {
 
     this.currentPath = [];
     this.currentPathIndex = 0;
+    this.stuckSampleTimer = 0;
+    this.stuckDuration = 0;
+    this.lastSampleX = this.pawn.x;
+    this.lastSampleY = this.pawn.y;
+    this.hasInitializedSamplePos = true;
     this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
       this.currentPath = path;
       this.currentPathIndex = path.length > 1 ? 1 : 0;
     });
+  }
+
+  /**
+   * Watchdog Anti-Stuck: monitora o deslocamento real do Killer a cada ~300ms/400ms.
+   * Se o Killer estiver em estado de movimento ('PATROL' ou 'CHASE'):
+   * - Se deslocar MENOS de 8 pixels em 400ms (indicando que está travado/patinando contra um colisor):
+   *   a) Pula imediatamente para o próximo waypoint do caminho (this.currentPathIndex++).
+   *   b) Aplica um pequeno impulso perpendicular à rota/quina para descolar do obstáculo.
+   * - Se permanecer estagnado por mais de 800ms:
+   *   a) Cancela a rota atual.
+   *   b) Força advanceToNextPatrolGenerator() (em PATROL) ou novo cálculo de rota (em CHASE).
+   */
+  public handleWatchdogAntiStuck(delta: number, generators: Generator[]): void {
+    const isMovingState = this.state === 'PATROL' || this.state === 'CHASE';
+    if (!isMovingState) {
+      this.stuckSampleTimer = 0;
+      this.stuckDuration = 0;
+      this.lastSampleX = this.pawn.x;
+      this.lastSampleY = this.pawn.y;
+      this.hasInitializedSamplePos = true;
+      return;
+    }
+
+    if (!this.hasInitializedSamplePos) {
+      this.lastSampleX = this.pawn.x;
+      this.lastSampleY = this.pawn.y;
+      this.hasInitializedSamplePos = true;
+      return;
+    }
+
+    this.stuckSampleTimer += delta;
+    if (this.stuckSampleTimer >= 300) {
+      const distMoved = Math.hypot(
+        this.pawn.x - this.lastSampleX,
+        this.pawn.y - this.lastSampleY
+      );
+
+      if (distMoved < 8) {
+        this.stuckDuration += this.stuckSampleTimer;
+
+        // Estágio 1: Estagnado há >= 400ms -> Pula para o próximo nó do A* e aplica impulso perpendicular
+        if (this.stuckDuration >= 400 && this.stuckDuration < 800) {
+          if (this.currentPath.length > 0 && this.currentPathIndex < this.currentPath.length - 1) {
+            this.currentPathIndex++;
+          }
+          let nudgeX = 0;
+          let nudgeY = 0;
+          if (this.currentPath.length > 0 && this.currentPath[this.currentPathIndex]) {
+            const targetNode = this.currentPath[this.currentPathIndex];
+            const angle = Math.atan2(targetNode.y - this.pawn.y, targetNode.x - this.pawn.x);
+            nudgeX = -Math.sin(angle) * 75;
+            nudgeY = Math.cos(angle) * 75;
+          } else {
+            const angle = this.pawn.rotation + Math.PI / 2;
+            nudgeX = Math.cos(angle) * 75;
+            nudgeY = Math.sin(angle) * 75;
+          }
+          this.pawn.setVelocity(nudgeX, nudgeY);
+        }
+
+        // Estágio 2: Estagnado há >= 800ms -> Cancela rota e força avanço para o próximo gerador / recalcula rota
+        if (this.stuckDuration >= 800) {
+          this.currentPath = [];
+          this.currentPathIndex = 0;
+          this.stuckDuration = 0;
+          if (this.state === 'PATROL') {
+            this.advanceToNextPatrolGenerator(generators);
+          } else if (this.state === 'CHASE') {
+            this.pathRecalcTimer = 300;
+          }
+        }
+      } else {
+        this.stuckDuration = 0;
+      }
+
+      this.stuckSampleTimer = 0;
+      this.lastSampleX = this.pawn.x;
+      this.lastSampleY = this.pawn.y;
+    }
   }
 }
