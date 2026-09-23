@@ -390,5 +390,22 @@ describe('AudioManager - Mock Web Audio API Node Generation', () => {
     audio.stopAllSparkingSounds();
     expect(audio.isGeneratorSparking('gen_2')).toBe(false);
   });
+
+  it('synthesizes whoosh slicing sound on attack swing', () => {
+    audio.playAttackSwingSound();
+
+    expect(mockCtx.createBufferSource).toHaveBeenCalled();
+    expect(mockCtx.createBiquadFilter).toHaveBeenCalled();
+    expect(mockCtx.createGain).toHaveBeenCalled();
+  });
+
+  it('synthesizes visceral punch and slicing impact sound on attack hit', () => {
+    audio.playAttackHitSound();
+
+    expect(mockCtx.createOscillator).toHaveBeenCalled();
+    expect(mockCtx.createBufferSource).toHaveBeenCalled();
+    expect(mockCtx.createBiquadFilter).toHaveBeenCalled();
+    expect(mockCtx.createGain).toHaveBeenCalled();
+  });
 });
 

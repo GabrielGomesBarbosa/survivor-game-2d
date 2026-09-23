@@ -120,4 +120,18 @@ export class SoundFX {
       });
     } catch (_) {}
   }
+
+  /**
+   * Toca o whoosh de ataque do Killer (lâmina cortando o ar).
+   */
+  static playAttackSwing(): void {
+    AudioManager.getInstance().playAttackSwingSound();
+  }
+
+  /**
+   * Toca o impacto de golpe do Killer no Survivor.
+   */
+  static playAttackHit(): void {
+    AudioManager.getInstance().playAttackHitSound();
+  }
 }

@@ -66,6 +66,9 @@ export interface IKillerPawn {
     targetPos: { x: number; y: number }
   ): void;
   getNavGrid?(): number[][];
+  performAttack?(target?: Player): boolean;
+  isAttacking?: boolean;
+  attackState?: string;
 }
 
 export class KillerAIController implements IKillerController {
@@ -228,8 +231,26 @@ export class KillerAIController implements IKillerController {
    * Estado CHASE: perseguição direta ou contorno via A*.
    */
   private handleChaseState(delta: number, player: Player, distToPlayer: number, settings: DebugSettings): void {
+    if (this.pawn.isAttacking) {
+      return;
+    }
+
     const speed = metersToPixels(settings.killerSpeed);
     const minBodyDist = settings.hitboxRadius * settings.playerScale * 2.28;
+
+    this.hasDirectLOS = this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, player.x, player.y);
+
+    // Gatilho de Ataque M1 da IA:
+    // No estado CHASE: quando a distância euclidiana for <= 1.8m (~108-110px) com linha de visão direta, dispara o ataque
+    const attackRange = metersToPixels(1.8);
+    if (distToPlayer <= attackRange && this.hasDirectLOS) {
+      if (this.pawn.performAttack && !this.pawn.isAttacking) {
+        const started = this.pawn.performAttack(player);
+        if (started) {
+          return;
+        }
+      }
+    }
 
     if (distToPlayer <= minBodyDist) {
       this.pawn.stopMovement();
@@ -240,8 +261,6 @@ export class KillerAIController implements IKillerController {
       this.pawn.rotateTowards(targetAngle, delta, 14);
       return;
     }
-
-    this.hasDirectLOS = this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, player.x, player.y);
 
     if (this.hasDirectLOS) {
       this.currentPath = [];
@@ -523,7 +542,7 @@ export class KillerAIController implements IKillerController {
    *   b) Força advanceToNextPatrolGenerator() (em PATROL) ou novo cálculo de rota (em CHASE).
    */
   public handleWatchdogAntiStuck(delta: number, generators: Generator[]): void {
-    const isMovingState = this.state === 'PATROL' || this.state === 'CHASE';
+    const isMovingState = (this.state === 'PATROL' || this.state === 'CHASE') && !this.pawn.isAttacking;
     if (!isMovingState) {
       this.stuckSampleTimer = 0;
       this.stuckDuration = 0;

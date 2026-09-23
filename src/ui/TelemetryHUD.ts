@@ -154,7 +154,7 @@ export class TelemetryHUD {
 
     if (this.hudKillerState) {
       this.hudKillerState.textContent = killerState;
-      if (killerState === 'CHASE') {
+      if (killerState === 'CHASE' || killerState === 'ATTACKING' || killerState.startsWith('RECOVERY')) {
         this.hudKillerState.className = 'hud-val state-chase';
       } else if (killerState === 'DESATIVADO' || killerState === 'OFFLINE' || killerState === 'STANDBY') {
         this.hudKillerState.className = 'hud-val state-disabled';

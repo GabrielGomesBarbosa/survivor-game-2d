@@ -84,17 +84,19 @@ export class DebugPanel {
     );
     this.attachTooltip(
       speedsFolder
-        .add(this.settings, 'walkSpeed', 1.0, 3.5, 0.1)
+        .add(this.settings, 'walkSpeed', 0.5, 5.0, 0.01)
         .name('Walk Speed (m/s)')
+        .decimals(2)
         .onChange(() => this.saveSettingsToStorage()),
-      'Velocidade base de caminhada do Player em metros/segundo (WASD normal, ~2.3 m/s).'
+      'Velocidade base de caminhada do Player em metros/segundo (WASD normal, ex: 2.26 m/s).'
     );
     this.attachTooltip(
       speedsFolder
-        .add(this.settings, 'runSpeed', 2.5, 6.0, 0.1)
+        .add(this.settings, 'runSpeed', 1.0, 8.0, 0.01)
         .name('Run Speed (m/s)')
+        .decimals(2)
         .onChange(() => this.saveSettingsToStorage()),
-      'Velocidade máxima de corrida ao pressionar a tecla Shift em metros/segundo (padrão DBD 4.0 m/s).'
+      'Velocidade máxima de corrida ao pressionar a tecla Shift em metros/segundo (padrão DBD 4.00 m/s).'
     );
     this.attachTooltip(
       speedsFolder
@@ -194,17 +196,19 @@ export class DebugPanel {
     const killerFolder = this.gui.addFolder('Killer (IA)');
     this.attachTooltip(
       killerFolder
-        .add(this.settings, 'killerSpeed', 3.0, 6.5, 0.1)
+        .add(this.settings, 'killerSpeed', 1.0, 8.0, 0.01)
         .name('Killer Speed (m/s)')
+        .decimals(2)
         .onChange(() => this.saveSettingsToStorage()),
-      'Velocidade constante única do Assassino em todos os estados de deslocamento (PATROL, ALERT, CHASE) em metros/segundo (padrão DBD 4.6 m/s).'
+      'Velocidade constante única do Assassino em todos os estados de deslocamento (PATROL, ALERT, CHASE) em metros/segundo (padrão DBD 4.16 - 4.60 m/s).'
     );
     this.attachTooltip(
       killerFolder
-        .add(this.settings, 'detectionRadius', 2.0, 20.0, 0.5)
+        .add(this.settings, 'detectionRadius', 2.0, 20.0, 0.05)
         .name('Detection Radius (m)')
+        .decimals(2)
         .onChange(() => this.saveSettingsToStorage()),
-      'Distância máxima de percepção em metros na qual o Killer avista o Player e inicia perseguição (padrão ~7.5m).'
+      'Distância máxima de percepção em metros na qual o Killer avista o Player e inicia perseguição (padrão ~7.50m).'
     );
     this.attachTooltip(
       killerFolder
@@ -215,8 +219,8 @@ export class DebugPanel {
     );
     this.attachTooltip(
       killerFolder
-        .add(this.settings, 'inspectionDistance', 80, 160, 5)
-        .name('Distância Inspeção')
+        .add(this.settings, 'inspectionDistance', 80, 160, 1)
+        .name('Distância Inspeção (px)')
         .onChange(() => this.saveSettingsToStorage()),
       'Distância em pixels para considerar chegada ao gerador e disparar o estado de inspeção (zona amarela).'
     );
@@ -259,8 +263,8 @@ export class DebugPanel {
       'Distância real de superfície (borda a borda) entre as hitboxes do Player e do Killer (0px no contato).'
     );
     this.attachTooltip(
-      monitorFolder.add(this.monitorState, 'currentSpeed').name('Vel. Atual').listen().disable(),
-      'Velocidade vetorial instantânea do Player em pixels por segundo.'
+      monitorFolder.add(this.monitorState, 'currentSpeed').name('Vel. Atual (m/s)').decimals(2).listen().disable(),
+      'Velocidade vetorial instantânea do Player em metros por segundo (m/s).'
     );
     this.attachTooltip(
       monitorFolder.add(this.monitorState, 'isMoving').name('Movendo').listen().disable(),
@@ -592,7 +596,7 @@ export class DebugPanel {
           this.settings.killerSpeed = Number((this.settings.killerSpeed / 60).toFixed(2));
         }
         if (typeof this.settings.detectionRadius === 'number' && this.settings.detectionRadius > 25) {
-          this.settings.detectionRadius = Number((this.settings.detectionRadius / 60).toFixed(1));
+          this.settings.detectionRadius = Number((this.settings.detectionRadius / 60).toFixed(2));
         }
       }
     } catch (e) {

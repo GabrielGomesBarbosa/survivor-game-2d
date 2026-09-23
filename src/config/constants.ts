@@ -18,7 +18,7 @@ export const GENERATOR_CANDIDATES_STORAGE_KEY = 'horror2d_generator_candidates';
  */
 export const PIXELS_PER_METER = 60;
 export const metersToPixels = (meters: number): number => meters * PIXELS_PER_METER;
-export const pixelsToMeters = (pixels: number): number => Number((pixels / PIXELS_PER_METER).toFixed(1));
+export const pixelsToMeters = (pixels: number, decimals: number = 2): number => Number((pixels / PIXELS_PER_METER).toFixed(decimals));
 export const TERROR_RADIUS_METERS = 32;
 
 /**
@@ -135,7 +135,7 @@ export const DEFAULT_MONITOR_STATE: MonitorState = {
   playerX: '2560',
   playerY: '1920',
   currentTile: '[40, 30]',
-  worldSize: `${WORLD_WIDTH}x${WORLD_HEIGHT} px (${pixelsToMeters(WORLD_WIDTH).toFixed(1)}m x ${pixelsToMeters(WORLD_HEIGHT).toFixed(1)}m)`,
+  worldSize: `${WORLD_WIDTH}x${WORLD_HEIGHT} px (${pixelsToMeters(WORLD_WIDTH, 1).toFixed(1)}m x ${pixelsToMeters(WORLD_HEIGHT, 1).toFixed(1)}m)`,
   killerState: 'PATROL',
   killerDist: '0.0m',
   fps: 0

@@ -8,12 +8,22 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, metersToPixels } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, metersToPixels, checkAttackHit, wrapAngle } from '../utils/gameLogic';
+import { AudioManager } from '../audio/AudioManager';
 import { Player } from './Player';
 
 import { Generator } from './Generator';
 import { IKillerController } from '../controllers/KillerController';
 import { KillerAIController, IKillerPawn } from '../controllers/KillerAIController';
+
+export type KillerAttackState = 'IDLE' | 'WINDUP' | 'LUNGE' | 'SUCCESS_RECOVERY' | 'MISS_RECOVERY';
+
+export interface KillerAttackCallbacks {
+  onAttackStart?: () => void;
+  onAttackHit?: (survivor: Player) => void;
+  onAttackMiss?: () => void;
+  onRecoveryEnd?: () => void;
+}
 
 export class Killer implements IKillerPawn {
   public sprite: Phaser.Physics.Arcade.Sprite;
@@ -24,6 +34,13 @@ export class Killer implements IKillerPawn {
   public lastSafeY = 224;
   public lastStableX = 1280;
   public lastStableY = 224;
+
+  // Estado e ciclo do Sistema de Ataque M1 (Lunge Dash & Blade Wipe)
+  public isAttacking: boolean = false;
+  public attackState: KillerAttackState = 'IDLE';
+  public attackTimer: number = 0;
+  public attackCallbacks: KillerAttackCallbacks = {};
+  public targetSurvivor?: Player;
 
   // Configurações ativas de depuração
   private settings: DebugSettings;
@@ -103,6 +120,11 @@ export class Killer implements IKillerPawn {
     if (this.settings && !this.settings.killerAiEnabled) {
       return 'DESATIVADO';
     }
+    if (this.isAttacking) {
+      if (this.attackState === 'LUNGE') return 'ATTACKING';
+      if (this.attackState === 'SUCCESS_RECOVERY') return 'RECOVERY (HIT)';
+      if (this.attackState === 'MISS_RECOVERY') return 'RECOVERY (MISS)';
+    }
     return this.controller ? this.controller.getState() : 'PATROL';
   }
 
@@ -128,7 +150,7 @@ export class Killer implements IKillerPawn {
   }
 
   /**
-   * Atualização principal delegada ao controlador ativo.
+   * Atualização principal delegada ao controlador ativo e ciclo de ataque.
    */
   public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
     this.settings = settings;
@@ -137,6 +159,11 @@ export class Killer implements IKillerPawn {
       this.lastStableX = this.sprite.x;
       this.lastStableY = this.sprite.y;
     }
+
+    if (this.isAttacking) {
+      this.updateAttack(delta, player, settings);
+    }
+
     if (this.controller) {
       this.controller.update(delta, player, generators, settings);
     }
@@ -227,11 +254,181 @@ export class Killer implements IKillerPawn {
     return true;
   }
 
+  // ==========================================
+  // SISTEMA DE ATAQUE M1 (LUNGE & BLADE WIPE)
+  // ==========================================
+
+  /**
+   * Dispara a ação de ataque M1 básico (Lunge Dash).
+   * @param targetPlayer Jogador alvo opcional
+   * @returns boolean se o ataque foi iniciado com sucesso
+   */
+  public performAttack(targetPlayer?: Player): boolean {
+    if (this.isAttacking) return false;
+
+    this.isAttacking = true;
+    this.attackState = 'LUNGE';
+    this.attackTimer = 250; // 250ms de lunge dash
+    if (targetPlayer) {
+      this.targetSurvivor = targetPlayer;
+    }
+
+    // Áudio de lâmina cortando o ar
+    AudioManager.getInstance().playAttackSwingSound();
+
+    // Notifica callback customizado desacoplado
+    this.attackCallbacks.onAttackStart?.();
+
+    // Impulso direcional frontal (Lunge Dash de ~1.5 a 2.0 metros)
+    const headingAngle = this.sprite.rotation + Math.PI / 2;
+    const dirX = Math.cos(headingAngle);
+    const dirY = Math.sin(headingAngle);
+    const lungeSpeed = metersToPixels((this.settings?.killerSpeed ?? 4.6) * 1.5);
+    this.sprite.setVelocity(dirX * lungeSpeed, dirY * lungeSpeed);
+
+    // Verificação de acerto imediato
+    if (targetPlayer && this.checkSlashHit(targetPlayer, this.settings)) {
+      this.onAttackHit(targetPlayer);
+    }
+
+    return true;
+  }
+
+  /**
+   * Atualização frame-a-frame do ciclo de ataque e recuperação.
+   */
+  public updateAttack(delta: number, player?: Player, settings?: DebugSettings): void {
+    const currentSettings = settings || this.settings;
+
+    if (this.attackState === 'LUNGE') {
+      this.attackTimer -= delta;
+
+      // Mantém velocidade de dash frontal
+      const headingAngle = this.sprite.rotation + Math.PI / 2;
+      const dirX = Math.cos(headingAngle);
+      const dirY = Math.sin(headingAngle);
+      const lungeSpeed = metersToPixels((currentSettings?.killerSpeed ?? 4.6) * 1.5);
+      this.sprite.setVelocity(dirX * lungeSpeed, dirY * lungeSpeed);
+
+      const target = player || this.targetSurvivor;
+      if (target && target.isActive !== false && target.sprite?.visible) {
+        // Leve assistência de mira angular durante o dash
+        const dx = target.x - this.sprite.x;
+        const dy = target.y - this.sprite.y;
+        const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
+        this.rotateTowards(targetAngle, delta, 8);
+
+        // Testa corte em arco
+        if (this.checkSlashHit(target, currentSettings)) {
+          this.onAttackHit(target);
+          return;
+        }
+      }
+
+      if (this.attackTimer <= 0) {
+        this.onAttackMiss();
+        return;
+      }
+    } else if (this.attackState === 'SUCCESS_RECOVERY') {
+      this.attackTimer -= delta;
+
+      // Desaceleração severa (~30% da velocidade nominal por 2.7s - Blade Wipe)
+      const baseSpeed = metersToPixels(currentSettings?.killerSpeed ?? 4.6);
+      const recoverySpeed = baseSpeed * 0.30;
+      const headingAngle = this.sprite.rotation + Math.PI / 2;
+      this.sprite.setVelocity(Math.cos(headingAngle) * recoverySpeed, Math.sin(headingAngle) * recoverySpeed);
+
+      if (this.attackTimer <= 0) {
+        this.attackState = 'IDLE';
+        this.isAttacking = false;
+        this.attackCallbacks.onRecoveryEnd?.();
+      }
+    } else if (this.attackState === 'MISS_RECOVERY') {
+      this.attackTimer -= delta;
+
+      // Desaceleração moderada (~60% da velocidade nominal por 1.5s - Recuperação de Golpe no Ar)
+      const baseSpeed = metersToPixels(currentSettings?.killerSpeed ?? 4.6);
+      const recoverySpeed = baseSpeed * 0.60;
+      const headingAngle = this.sprite.rotation + Math.PI / 2;
+      this.sprite.setVelocity(Math.cos(headingAngle) * recoverySpeed, Math.sin(headingAngle) * recoverySpeed);
+
+      if (this.attackTimer <= 0) {
+        this.attackState = 'IDLE';
+        this.isAttacking = false;
+        this.attackCallbacks.onRecoveryEnd?.();
+      }
+    }
+  }
+
+  /**
+   * Conclui ataque com sucesso ao atingir o Survivor (inicia Blade Wipe de 2.7s).
+   */
+  public onAttackHit(survivor?: Player): void {
+    if (!this.isAttacking) {
+      this.isAttacking = true;
+    }
+    this.attackState = 'SUCCESS_RECOVERY';
+    this.attackTimer = 2700; // 2.7s cooldown
+
+    // Som carnoso e seco de impacto de golpe
+    AudioManager.getInstance().playAttackHitSound();
+
+    // Aplica dano / estado de ferido ao Survivor
+    survivor?.takeDamage();
+
+    // Callback desacoplado para cenas e HUD
+    if (survivor) {
+      this.attackCallbacks.onAttackHit?.(survivor);
+    }
+
+    // Feedback visual de impacto
+    if (this.scene?.cameras?.main) {
+      this.scene.cameras.main.flash(260, 220, 20, 20);
+    }
+  }
+
+  /**
+   * Conclui ataque sem contato (inicia recuperação de erro de 1.5s).
+   */
+  public onAttackMiss(): void {
+    if (!this.isAttacking) {
+      this.isAttacking = true;
+    }
+    this.attackState = 'MISS_RECOVERY';
+    this.attackTimer = 1500; // 1.5s cooldown
+
+    this.attackCallbacks.onAttackMiss?.();
+  }
+
+  /**
+   * Avalia se o Survivor está dentro do alcance e arco frontal de corte do Killer.
+   */
+  public checkSlashHit(player: Player, settings?: DebugSettings): boolean {
+    if (!player || !player.sprite || player.isActive === false || !player.sprite.visible) {
+      return false;
+    }
+    const currentSettings = settings || this.settings;
+    const playerRadius = (currentSettings?.hitboxRadius ?? 65) * (currentSettings?.playerScale ?? 0.25);
+    const killerRadius = playerRadius * 1.28;
+    return checkAttackHit(
+      { x: this.sprite.x, y: this.sprite.y },
+      this.sprite.rotation,
+      { x: player.x, y: player.y },
+      playerRadius,
+      killerRadius,
+      1.9
+    );
+  }
+
   /**
    * Tratamento de colisão física sólida não-elástica com o Player (Anti-Tunelamento e Bloqueio Corporal Rígido).
    */
   public handlePlayerCollision(player: Player, settings: DebugSettings, onAttack?: () => void): void {
     if (!this.sprite || !player.sprite || !this.sprite.body || !player.sprite.body) return;
+
+    if (this.isAttacking && this.attackState === 'LUNGE') {
+      this.onAttackHit(player);
+    }
 
     const now = this.scene.time.now;
     if (now - this.lastAttackTime >= 1400) {

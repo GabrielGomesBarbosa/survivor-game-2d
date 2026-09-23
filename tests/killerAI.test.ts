@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   GeneratorPatrolManager,
   MAJOR_FACILITY_ROOMS,
@@ -16,7 +16,8 @@ import {
   PIXELS_PER_METER,
   metersToPixels,
   pixelsToMeters,
-  formatMapDimensionsMetric
+  formatMapDimensionsMetric,
+  checkAttackHit
 } from '../src/utils/gameLogic';
 import { KillerAIController, IKillerPawn } from '../src/controllers/KillerAIController';
 import { DEFAULT_DEBUG_SETTINGS } from '../src/config/constants';
@@ -1005,6 +1006,23 @@ describe('Killer AI - Constant Single Speed (Dead by Daylight Standard)', () => 
     expect(patrolSpeed).toBeCloseTo(276, 1);
     expect(patrolSpeed).toBeCloseTo(metersToPixels(mockSettings.killerSpeed), 1);
   });
+
+  it('applies fractional killerSpeed (e.g. 4.16 m/s) with 2 decimal precision without truncation', () => {
+    const pawn = createSpeedTestPawn(100, 100, true);
+    const controller = new KillerAIController(pawn);
+    controller.advanceToNextPatrolGenerator(mockGenerators);
+    controller.patrolTarget.set(500, 100);
+
+    const mockPlayerFar = { x: 9999, y: 9999, isActive: true, sprite: { visible: true } } as any;
+    controller.update(16, mockPlayerFar, mockGenerators, { ...mockSettings, killerSpeed: 4.16 });
+
+    expect(pawn.velocities.length).toBeGreaterThan(0);
+    const lastVel = pawn.velocities[pawn.velocities.length - 1];
+    const speedMagnitude = Math.hypot(lastVel.vx, lastVel.vy);
+
+    // 4.16 m/s * 60 = 249.6 px/s (float contínuo sem perda de precisão)
+    expect(speedMagnitude).toBeCloseTo(249.6, 2);
+  });
 });
 
 describe('Metric System Standardization (Dead by Daylight Scale: 1m = 60px)', () => {
@@ -1029,17 +1047,161 @@ describe('Metric System Standardization (Dead by Daylight Scale: 1m = 60px)', ()
     expect(metersToPixels(7.5)).toBe(450);
   });
 
-  it('correctly converts pixels to meters with 1 decimal precision', () => {
+  it('correctly converts pixels to meters with 2 decimal precision by default', () => {
     expect(pixelsToMeters(60)).toBe(1.0);
     expect(pixelsToMeters(240)).toBe(4.0);
     expect(pixelsToMeters(276)).toBe(4.6);
+    expect(pixelsToMeters(249.6)).toBe(4.16); // Killer Speed 4.16 m/s
+    expect(pixelsToMeters(135.6)).toBe(2.26); // Survivor Walk Speed 2.26 m/s
     expect(pixelsToMeters(1920)).toBe(32.0);
-    expect(pixelsToMeters(850)).toBe(14.2);
+    expect(pixelsToMeters(850)).toBe(14.17);
+    expect(pixelsToMeters(850, 1)).toBe(14.2);
   });
 
   it('formats map dimensions in pixels and meters according to specification', () => {
     const formatted = formatMapDimensionsMetric(5120, 3840);
     expect(formatted).toBe('5120x3840 px (85.3m x 64.0m)');
+  });
+});
+
+describe('Killer M1 Attack System (Lunge Dash, Frontal Arc Slash & AI Attack Trigger)', () => {
+  const playerRadius = 65 * 0.25; // 16.25px
+  const killerRadius = playerRadius * 1.28; // 20.8px
+  const mockGenerators = [
+    { name: 'Gerador A', x: 1000, y: 1000, progress: 20, isCompleted: false }
+  ] as any;
+
+  describe('checkAttackHit - Frontal Arc Geometry', () => {
+    it('hits when survivor is in front of the killer within reach (1.5m / 90px)', () => {
+      // Killer olhando para o Sul (+Y): rotation = 0
+      const killerPos = { x: 100, y: 100 };
+      const survivorPos = { x: 100, y: 170 }; // 70px ao Sul (à frente)
+      const hit = checkAttackHit(killerPos, 0, survivorPos, playerRadius, killerRadius, 1.9);
+      expect(hit).toBe(true);
+    });
+
+    it('hits when survivor is in frontal cutting cone (approx 45 degrees to the left/right)', () => {
+      // Killer olhando para o Leste (+X): rotation = -PI/2
+      const killerPos = { x: 100, y: 100 };
+      const survivorPos = { x: 160, y: 140 }; // ângulo ~45°, ~72px de distância
+      const hit = checkAttackHit(killerPos, -Math.PI / 2, survivorPos, playerRadius, killerRadius, 1.9);
+      expect(hit).toBe(true);
+    });
+
+    it('misses when survivor is behind the killer', () => {
+      // Killer olhando para o Sul (+Y): rotation = 0
+      const killerPos = { x: 100, y: 100 };
+      const survivorBehind = { x: 100, y: 30 }; // Ao Norte (-Y, nas costas)
+      const hit = checkAttackHit(killerPos, 0, survivorBehind, playerRadius, killerRadius, 1.9);
+      expect(hit).toBe(false);
+    });
+
+    it('misses when survivor is beyond maximum reach (> 1.9m = 114px)', () => {
+      const killerPos = { x: 100, y: 100 };
+      const survivorFar = { x: 100, y: 250 }; // 150px de distância
+      const hit = checkAttackHit(killerPos, 0, survivorFar, playerRadius, killerRadius, 1.9);
+      expect(hit).toBe(false);
+    });
+
+    it('hits when survivor is in immediate physical contact regardless of angle', () => {
+      // Killer olhando para o Sul (+Y): rotation = 0, survivor colidindo pelas costas
+      const killerPos = { x: 100, y: 100 };
+      const survivorTouchingBehind = { x: 100, y: 75 }; // 25px de distância (< playerRadius + killerRadius + 12 = 49px)
+      const hit = checkAttackHit(killerPos, 0, survivorTouchingBehind, playerRadius, killerRadius, 1.9);
+      expect(hit).toBe(true);
+    });
+  });
+
+  describe('KillerAIController - AI M1 Attack Trigger in CHASE', () => {
+    it('triggers performAttack when distance to survivor <= 1.8m (108px) with direct line of sight', () => {
+      let attackTriggered = false;
+      const pawn: any = {
+        x: 100,
+        y: 100,
+        rotation: 0,
+        setVelocity: vi.fn(),
+        stopMovement: vi.fn(),
+        rotateTowards: vi.fn(),
+        playAnimation: vi.fn(),
+        stopAnimation: vi.fn(),
+        isWalkableTile: () => true,
+        hasLineOfSight: () => true,
+        calculatePath: vi.fn(),
+        renderVisionGraphic: vi.fn(),
+        renderRouteGraphic: vi.fn(),
+        isAttacking: false,
+        performAttack: vi.fn(() => {
+          attackTriggered = true;
+          return true;
+        })
+      };
+
+      const controller = new KillerAIController(pawn);
+      controller.state = 'CHASE';
+
+      const mockPlayerNear = { x: 100, y: 180, isActive: true, sprite: { visible: true } } as any; // 80px (< 1.8m = 108px)
+      controller.update(16, mockPlayerNear, mockGenerators, { ...DEFAULT_DEBUG_SETTINGS, detectionRadius: 7.5 });
+
+      expect(attackTriggered).toBe(true);
+      expect(pawn.performAttack).toHaveBeenCalledWith(mockPlayerNear);
+    });
+
+    it('does not trigger attack if there is no line of sight to the survivor', () => {
+      const pawn: any = {
+        x: 100,
+        y: 100,
+        rotation: 0,
+        setVelocity: vi.fn(),
+        stopMovement: vi.fn(),
+        rotateTowards: vi.fn(),
+        playAnimation: vi.fn(),
+        stopAnimation: vi.fn(),
+        isWalkableTile: () => true,
+        hasLineOfSight: () => false, // sem LOS
+        calculatePath: vi.fn(),
+        renderVisionGraphic: vi.fn(),
+        renderRouteGraphic: vi.fn(),
+        isAttacking: false,
+        performAttack: vi.fn()
+      };
+
+      const controller = new KillerAIController(pawn);
+      controller.state = 'CHASE';
+
+      const mockPlayerNear = { x: 100, y: 180, isActive: true, sprite: { visible: true } } as any;
+      controller.update(16, mockPlayerNear, mockGenerators, { ...DEFAULT_DEBUG_SETTINGS, detectionRadius: 7.5 });
+
+      expect(pawn.performAttack).not.toHaveBeenCalled();
+    });
+
+    it('preserves attack state without overriding velocities when pawn.isAttacking is true', () => {
+      const pawn: any = {
+        x: 100,
+        y: 100,
+        rotation: 0,
+        setVelocity: vi.fn(),
+        stopMovement: vi.fn(),
+        rotateTowards: vi.fn(),
+        playAnimation: vi.fn(),
+        stopAnimation: vi.fn(),
+        isWalkableTile: () => true,
+        hasLineOfSight: () => true,
+        calculatePath: vi.fn(),
+        renderVisionGraphic: vi.fn(),
+        renderRouteGraphic: vi.fn(),
+        isAttacking: true, // Já em ataque/recuperação
+        performAttack: vi.fn()
+      };
+
+      const controller = new KillerAIController(pawn);
+      controller.state = 'CHASE';
+
+      const mockPlayer = { x: 100, y: 300, isActive: true, sprite: { visible: true } } as any;
+      controller.update(16, mockPlayer, mockGenerators, { ...DEFAULT_DEBUG_SETTINGS, detectionRadius: 7.5 });
+
+      // IA não deve ter chamado setVelocity (delegado ao pawn durante ataque/recovery)
+      expect(pawn.setVelocity).not.toHaveBeenCalled();
+    });
   });
 });
 

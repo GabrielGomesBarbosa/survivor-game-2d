@@ -868,4 +868,112 @@ export class AudioManager {
       }, (duration + 0.02) * 1000);
     } catch (_) {}
   }
+
+  /**
+   * Efeito sonoro procedural de corte no ar (whoosh de lâmina):
+   * Pulso curto de ruído com filtro passa-faixa ou passa-alta modulado rapidamente.
+   */
+  public playAttackSwingSound(): void {
+    if (!this.enabled) return;
+    const ctx = this.getContext();
+    if (!ctx || !this.masterGain) return;
+
+    try {
+      const now = ctx.currentTime;
+      const duration = 0.16; // 160ms
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.getNoiseBuffer(ctx);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.Q.setValueAtTime(2.5, now);
+      filter.frequency.setValueAtTime(1400, now);
+      filter.frequency.exponentialRampToValueAtTime(320, now + duration);
+
+      const gain = ctx.createGain();
+      const vol = 0.45 * this.volume;
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+
+      noise.start(now);
+      noise.stop(now + duration);
+
+      setTimeout(() => {
+        try {
+          noise.disconnect();
+          filter.disconnect();
+          gain.disconnect();
+        } catch (_) {}
+      }, (duration + 0.05) * 1000);
+    } catch (_) {}
+  }
+
+  /**
+   * Efeito sonoro procedural de impacto de ataque no Survivor:
+   * Impacto seco e carnoso combinando onda grave triangular e ruído de corte filtrado.
+   */
+  public playAttackHitSound(): void {
+    if (!this.enabled) return;
+    const ctx = this.getContext();
+    if (!ctx || !this.masterGain) return;
+
+    try {
+      const now = ctx.currentTime;
+      const duration = 0.22; // 220ms
+
+      // 1. Componente carnoso grave (impacto de golpe)
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(150, now);
+      osc.frequency.exponentialRampToValueAtTime(40, now + 0.14);
+
+      const oscGain = ctx.createGain();
+      const oscVol = 0.65 * this.volume;
+      oscGain.gain.setValueAtTime(oscVol, now);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+      osc.connect(oscGain);
+      oscGain.connect(this.masterGain);
+      osc.start(now);
+      osc.stop(now + 0.18);
+
+      // 2. Componente de corte da lâmina (ruído rasgante)
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.getNoiseBuffer(ctx);
+
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = 'bandpass';
+      noiseFilter.frequency.setValueAtTime(900, now);
+      noiseFilter.frequency.linearRampToValueAtTime(400, now + 0.10);
+      noiseFilter.Q.setValueAtTime(1.8, now);
+
+      const noiseGain = ctx.createGain();
+      const noiseVol = 0.50 * this.volume;
+      noiseGain.gain.setValueAtTime(noiseVol, now);
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+      noise.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(this.masterGain);
+
+      noise.start(now);
+      noise.stop(now + duration);
+
+      setTimeout(() => {
+        try {
+          osc.disconnect();
+          oscGain.disconnect();
+          noise.disconnect();
+          noiseFilter.disconnect();
+          noiseGain.disconnect();
+        } catch (_) {}
+      }, (duration + 0.05) * 1000);
+    } catch (_) {}
+  }
 }

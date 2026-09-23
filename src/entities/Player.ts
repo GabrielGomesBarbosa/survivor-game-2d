@@ -20,6 +20,7 @@ export class Player {
   public isInputMoving = false;
   public isSprintingInput = false;
   public inputDir = { x: 0, y: 0 };
+  public isInjured = false;
 
   // Trava de integridade contra penetração em paredes
   public lastSafeX = 1280;
@@ -479,7 +480,7 @@ export class Player {
 
     this.isMoving = evalState.isMoving;
     this.isSprinting = evalState.isMoving && this.isSprintingInput;
-    this.currentSpeed = Math.round(evalState.actualSpeed);
+    this.currentSpeed = evalState.actualSpeed;
 
     if (evalState.animState === 'idle') {
       if (this.sprite.anims.isPlaying) {
@@ -492,6 +493,37 @@ export class Player {
           this.sprite.anims.play(evalState.animState, true);
         }
       }
+    }
+  }
+
+  /**
+   * Aplica dano / estado de ferido ao Survivor com feedback visual temporário e persistente.
+   */
+  public takeDamage(): void {
+    this.isInjured = true;
+    if (this.sprite) {
+      this.sprite.setTint(0xff5555);
+      if (this.scene?.time) {
+        this.scene.time.delayedCall(350, () => {
+          if (this.sprite) {
+            if (this.isInjured) {
+              this.sprite.setTint(0xff9999);
+            } else {
+              this.sprite.clearTint();
+            }
+          }
+        });
+      }
+    }
+  }
+
+  /**
+   * Restaura a saúde plena do Survivor, removendo o estado de ferido.
+   */
+  public heal(): void {
+    this.isInjured = false;
+    if (this.sprite) {
+      this.sprite.clearTint();
     }
   }
 

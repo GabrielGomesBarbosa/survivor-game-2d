@@ -210,9 +210,15 @@ export class SandboxScene extends Phaser.Scene {
       });
     });
 
-    // 4. Entities & Systems
     this.player = new Player(this, 2560, 1920, this.debugPanel.settings);
     this.killer = new Killer(this, 2560, 736, this.debugPanel.settings, this.easystar, this.mapData.navGrid, this.mapData.walls, this.mapData.obstacles);
+    this.killer.attackCallbacks = {
+      onAttackHit: (_survivor) => {
+        this.telemetryHud.showAttackAlert();
+        this.cameras.main.flash(260, 220, 20, 20);
+        this.cameras.main.shake(180, 0.005);
+      }
+    };
     this.generators = [];
     this.skillCheck = new SkillCheckSystem(this);
     this.repairPrompt = new RepairPromptUI(this);
@@ -313,6 +319,10 @@ export class SandboxScene extends Phaser.Scene {
       // LMB: Posicionar gerador apenas se panState.canPlaceGenerator for verdadeiro
       if (panState.canPlaceGenerator && this.generatorPlacer?.isActive) {
         this.generatorPlacer.handlePointerDown(pointer);
+      } else if (isLeft && (!this.debugPanel.settings.killerAiEnabled || !this.debugPanel.settings.survivorActive)) {
+        if (this.killer && !this.isPanningCamera) {
+          this.killer.performAttack(this.player);
+        }
       }
     });
 
@@ -397,6 +407,12 @@ export class SandboxScene extends Phaser.Scene {
 
     this.handleGeneratorInteraction(delta);
     this.player.update(delta, this.isRepairing, this.debugPanel.settings);
+
+    // Disparo manual de ataque via Barra de Espaço (caso o Killer esteja sem IA ou em Modo Espectador)
+    if (this.keySpace && Phaser.Input.Keyboard.JustDown(this.keySpace) && (!this.debugPanel.settings.killerAiEnabled || !this.debugPanel.settings.survivorActive)) {
+      this.killer.performAttack(this.player);
+    }
+
     this.killer.update(delta, this.player, this.generators.filter((g) => !g.isCompleted), this.debugPanel.settings);
     this.skillCheck.update(
       delta, this.isRepairing, this.debugPanel.settings.skillCheckFrequency,
@@ -601,7 +617,7 @@ export class SandboxScene extends Phaser.Scene {
     const killerDistStr = `${distMeters.toFixed(1)}m`;
 
     const mon = this.debugPanel.monitorState;
-    mon.currentSpeed = Number(pixelsToMeters(this.player.currentSpeed).toFixed(1));
+    mon.currentSpeed = pixelsToMeters(this.player.currentSpeed, 2);
     mon.isMoving = this.player.isMoving;
     mon.isSprinting = this.player.isSprinting;
     mon.rotationDeg = `${Math.round(Phaser.Math.RadToDeg(this.player.rotation))}°`;

@@ -12,7 +12,7 @@ import defaultSpawnCandidatesJson from '../data/generatorSpawnCandidates.json';
  */
 export const PIXELS_PER_METER = 60;
 export const metersToPixels = (meters: number): number => meters * PIXELS_PER_METER;
-export const pixelsToMeters = (pixels: number): number => Number((pixels / PIXELS_PER_METER).toFixed(1));
+export const pixelsToMeters = (pixels: number, decimals: number = 2): number => Number((pixels / PIXELS_PER_METER).toFixed(decimals));
 
 /**
  * Formata as dimensões do mapa em pixels e metros.
@@ -21,8 +21,8 @@ export const pixelsToMeters = (pixels: number): number => Number((pixels / PIXEL
  * @returns '5120x3840 px (85.3m x 64.0m)'
  */
 export function formatMapDimensionsMetric(widthPixels: number = 5120, heightPixels: number = 3840): string {
-  const wMeters = pixelsToMeters(widthPixels).toFixed(1);
-  const hMeters = pixelsToMeters(heightPixels).toFixed(1);
+  const wMeters = pixelsToMeters(widthPixels, 1).toFixed(1);
+  const hMeters = pixelsToMeters(heightPixels, 1).toFixed(1);
   return `${widthPixels}x${heightPixels} px (${wMeters}m x ${hMeters}m)`;
 }
 
@@ -1988,6 +1988,46 @@ export function shouldKillerKickGenerator(generator: {
   if (generator.progress <= 0) return false;
   if (generator.isRegressing) return false;
   return true;
+}
+
+/**
+ * Verifica se a área de corte em arco frontal do Killer atinge o Survivor.
+ * @param killerPos Posição {x, y} do Killer
+ * @param killerRotation Rotação angular em radianos do sprite do Killer
+ * @param playerPos Posição {x, y} do Survivor
+ * @param playerRadius Raio da hitbox circular do Survivor
+ * @param killerRadius Raio da hitbox circular do Killer
+ * @param maxReachMeters Alcance máximo frontal em metros (padrão: 1.9m)
+ * @returns boolean indicando se houve acerto do golpe
+ */
+export function checkAttackHit(
+  killerPos: { x: number; y: number },
+  killerRotation: number,
+  playerPos: { x: number; y: number },
+  playerRadius: number,
+  killerRadius: number,
+  maxReachMeters: number = 1.9
+): boolean {
+  const dx = playerPos.x - killerPos.x;
+  const dy = playerPos.y - killerPos.y;
+  const dist = Math.hypot(dx, dy);
+  const maxReachPixels = metersToPixels(maxReachMeters);
+
+  if (dist > maxReachPixels) {
+    return false;
+  }
+
+  // Contato físico direto imediato
+  if (dist <= (playerRadius + killerRadius) + 12) {
+    return true;
+  }
+
+  // Arco frontal de corte (~140° total, ±70° a partir do vetor frontal do Killer)
+  const headingAngle = wrapAngle(killerRotation + Math.PI / 2);
+  const targetAngle = Math.atan2(dy, dx);
+  const angleDiff = Math.abs(wrapAngle(targetAngle - headingAngle));
+
+  return angleDiff <= (Math.PI * 0.40);
 }
 
 
