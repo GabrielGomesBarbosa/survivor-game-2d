@@ -66,6 +66,8 @@ export interface IKillerPawn {
     targetPos: { x: number; y: number }
   ): void;
   getNavGrid?(): number[][];
+  getWeightedGrid?(): number[][];
+  hasClearanceLineOfSight?(x1: number, y1: number, x2: number, y2: number, clearanceRadius?: number): boolean;
   performAttack?(target?: Player): boolean;
   isAttacking?: boolean;
   attackState?: string;
@@ -284,24 +286,42 @@ export class KillerAIController implements IKillerController {
       }
 
       if (this.currentPath.length > 0) {
-        const targetNode = this.currentPath[this.currentPathIndex];
-        const distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+        let targetNode = this.currentPath[this.currentPathIndex];
+        let distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
 
-        if (distToNode < 36 && this.currentPathIndex < this.currentPath.length - 1) {
+        // Considera o waypoint alcançado com antecedência suave (dist <= 24px)
+        if (distToNode <= 24 && this.currentPathIndex < this.currentPath.length - 1) {
           this.currentPathIndex++;
+          targetNode = this.currentPath[this.currentPathIndex];
+          distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
         }
 
+        // Se houver próximo nó com passagem livre ampla (clearance 45px), avalia corte antecipado suave
         if (this.currentPathIndex + 1 < this.currentPath.length) {
           const nextNode = this.currentPath[this.currentPathIndex + 1];
-          if (this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, nextNode.x, nextNode.y)) {
+          const hasClearLOS = this.pawn.hasClearanceLineOfSight
+            ? this.pawn.hasClearanceLineOfSight(this.pawn.x, this.pawn.y, nextNode.x, nextNode.y, 45)
+            : this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, nextNode.x, nextNode.y);
+          if (hasClearLOS && distToNode <= 36) {
             this.currentPathIndex++;
+            targetNode = this.currentPath[this.currentPathIndex];
+            distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
           }
         }
 
-        const activeNode = this.currentPath[this.currentPathIndex];
-        const dx = activeNode.x - this.pawn.x;
-        const dy = activeNode.y - this.pawn.y;
-        const moveVec = normalizeVec(dx, dy);
+        const vCurr = normalizeVec(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+        let moveVec = vCurr;
+
+        // Look-Ahead Steering: interpolação vetorial suave em direção ao nó seguinte (dist < 36px)
+        if (this.currentPathIndex < this.currentPath.length - 1 && distToNode < 36) {
+          const nextNode = this.currentPath[this.currentPathIndex + 1];
+          const vNext = normalizeVec(nextNode.x - this.pawn.x, nextNode.y - this.pawn.y);
+          const blendFactor = Math.min(1, Math.max(0, (36 - distToNode) / 36)) * 0.5;
+          moveVec = normalizeVec(
+            vCurr.x * (1 - blendFactor) + vNext.x * blendFactor,
+            vCurr.y * (1 - blendFactor) + vNext.y * blendFactor
+          );
+        }
 
         this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
         this.pawn.playAnimation('run');
@@ -400,8 +420,12 @@ export class KillerAIController implements IKillerController {
 
     const speed = metersToPixels(settings.killerSpeed);
 
-    // Se houver linha direta de visão até a área segura do gerador, caminhar direto
-    if (this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y)) {
+    // Se houver linha direta de visão COM FOLGA DE PASSAGEM (45px) até a área segura do gerador, caminhar direto
+    const canWalkDirectly = this.pawn.hasClearanceLineOfSight
+      ? this.pawn.hasClearanceLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, 45)
+      : this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y);
+
+    if (canWalkDirectly) {
       this.currentPath = [];
       const dx = this.patrolTarget.x - this.pawn.x;
       const dy = this.patrolTarget.y - this.pawn.y;
@@ -414,17 +438,29 @@ export class KillerAIController implements IKillerController {
       this.pawn.rotateTowards(targetAngle, delta, 5);
     } else {
       if (this.currentPath.length > 0) {
-        const targetNode = this.currentPath[this.currentPathIndex];
-        const distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+        let targetNode = this.currentPath[this.currentPathIndex];
+        let distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
 
-        if (distToNode < 36 && this.currentPathIndex < this.currentPath.length - 1) {
+        // Considera o waypoint alcançado com antecedência suave (dist <= 24px)
+        if (distToNode <= 24 && this.currentPathIndex < this.currentPath.length - 1) {
           this.currentPathIndex++;
+          targetNode = this.currentPath[this.currentPathIndex];
+          distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
         }
 
-        const activeNode = this.currentPath[this.currentPathIndex];
-        const dx = activeNode.x - this.pawn.x;
-        const dy = activeNode.y - this.pawn.y;
-        const moveVec = normalizeVec(dx, dy);
+        const vCurr = normalizeVec(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+        let moveVec = vCurr;
+
+        // Look-Ahead Steering: interpolação vetorial suave em direção ao nó seguinte (dist < 36px)
+        if (this.currentPathIndex < this.currentPath.length - 1 && distToNode < 36) {
+          const nextNode = this.currentPath[this.currentPathIndex + 1];
+          const vNext = normalizeVec(nextNode.x - this.pawn.x, nextNode.y - this.pawn.y);
+          const blendFactor = Math.min(1, Math.max(0, (36 - distToNode) / 36)) * 0.5;
+          moveVec = normalizeVec(
+            vCurr.x * (1 - blendFactor) + vNext.x * blendFactor,
+            vCurr.y * (1 - blendFactor) + vNext.y * blendFactor
+          );
+        }
 
         this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
         this.pawn.playAnimation('walk');

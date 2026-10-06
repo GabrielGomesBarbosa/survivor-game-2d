@@ -8,7 +8,7 @@
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
-import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, metersToPixels, checkAttackHit, wrapAngle } from '../utils/gameLogic';
+import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, hasClearanceLineOfSight, buildAiWeightedGrid, metersToPixels, checkAttackHit, wrapAngle } from '../utils/gameLogic';
 import { AudioManager } from '../audio/AudioManager';
 import { Player } from './Player';
 
@@ -55,6 +55,7 @@ export class Killer implements IKillerPawn {
   private scene: Phaser.Scene;
   private easystar: EasyStar.js;
   private navGrid: number[][];
+  private weightedGrid: number[][];
   private walls: Phaser.Physics.Arcade.StaticGroup;
   private obstacles: Phaser.Physics.Arcade.StaticGroup;
 
@@ -75,6 +76,7 @@ export class Killer implements IKillerPawn {
     this.settings = settings;
     this.easystar = easystar;
     this.navGrid = navGrid;
+    this.weightedGrid = buildAiWeightedGrid(navGrid);
     this.walls = walls;
     this.obstacles = obstacles;
     this.lastSafeX = x;
@@ -504,10 +506,12 @@ export class Killer implements IKillerPawn {
   }
 
   /**
-   * Atualiza dinamicamente a malha navGrid ativa do Killer (com geradores e paredes).
+   * Atualiza dinamicamente a malha navGrid ativa do Killer (com geradores e paredes)
+   * e recalcula a malha ponderada de IA para contorno de quinas.
    */
-  public updateNavGrid(navGrid: number[][]): void {
+  public updateNavGrid(navGrid: number[][], weightedGrid?: number[][]): void {
     this.navGrid = navGrid;
+    this.weightedGrid = weightedGrid || buildAiWeightedGrid(navGrid);
   }
 
   /**
@@ -515,6 +519,13 @@ export class Killer implements IKillerPawn {
    */
   public getNavGrid(): number[][] {
     return this.navGrid;
+  }
+
+  /**
+   * Retorna a malha ponderada (weightedGrid) ativa do Killer.
+   */
+  public getWeightedGrid(): number[][] {
+    return this.weightedGrid;
   }
 
   /**
@@ -568,6 +579,57 @@ export class Killer implements IKillerPawn {
   }
 
   /**
+   * Thick Raycast / Capsule Cast para navegação física e String Pulling:
+   * Testa passagem desobstruída com margem de folga física do corpo (clearanceRadius = 45px)
+   * contra a geometria física do cenário (paredes, obstáculos e malha navGrid/weightedGrid).
+   */
+  public hasClearanceLineOfSight(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    clearanceRadius: number = 45
+  ): boolean {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const dist = Math.hypot(dx, dy);
+    if (dist >= 2) {
+      const pX = -dy / dist;
+      const pY = dx / dist;
+
+      const rays = [
+        new Phaser.Geom.Line(x1, y1, x2, y2),
+        new Phaser.Geom.Line(x1 + pX * clearanceRadius, y1 + pY * clearanceRadius, x2 + pX * clearanceRadius, y2 + pY * clearanceRadius),
+        new Phaser.Geom.Line(x1 - pX * clearanceRadius, y1 - pY * clearanceRadius, x2 - pX * clearanceRadius, y2 - pY * clearanceRadius)
+      ];
+
+      const wallBodies = this.walls.getChildren() as Phaser.GameObjects.Rectangle[];
+      const obstacleBodies = this.obstacles.getChildren() as Phaser.GameObjects.Rectangle[];
+      const allSolids = wallBodies.concat(obstacleBodies);
+
+      for (const solid of allSolids) {
+        const b = solid.body as Phaser.Physics.Arcade.StaticBody;
+        if (!b) continue;
+
+        const rect = new Phaser.Geom.Rectangle(b.x, b.y, b.width, b.height);
+        for (const ray of rays) {
+          if (Phaser.Geom.Intersects.LineToRectangle(ray, rect)) {
+            return false;
+          }
+        }
+      }
+    }
+
+    if (this.navGrid && this.navGrid.length > 0) {
+      if (!hasClearanceLineOfSight(x1, y1, x2, y2, this.navGrid, clearanceRadius, TILE_SIZE, this.weightedGrid)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * Executa o cálculo de caminho A* usando EasyStar.js com suavização e ancoragem no destino exato.
    */
   public calculatePath(
@@ -593,11 +655,13 @@ export class Killer implements IKillerPawn {
           y: p.y * TILE_SIZE + TILE_SIZE / 2
         }));
 
-        // Suavização da rota eliminando degraus e ancorando exatamente no ponto alvo (toX, toY)
+        // Suavização da rota eliminando degraus e preservando quinas com Thick Raycast (45px)
         const smoothed = smoothPathNodes(
           mapped,
           { x: toX, y: toY },
-          (x1, y1, x2, y2) => this.hasLineOfSight(x1, y1, x2, y2)
+          (x1, y1, x2, y2) => this.hasClearanceLineOfSight(x1, y1, x2, y2, 45),
+          this.weightedGrid,
+          TILE_SIZE
         );
 
         onPathFound(smoothed);

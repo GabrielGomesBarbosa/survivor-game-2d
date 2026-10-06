@@ -17,7 +17,8 @@ import {
   metersToPixels,
   pixelsToMeters,
   formatMapDimensionsMetric,
-  checkAttackHit
+  checkAttackHit,
+  hasClearanceLineOfSight
 } from '../src/utils/gameLogic';
 import { KillerAIController, IKillerPawn } from '../src/controllers/KillerAIController';
 import { DEFAULT_DEBUG_SETTINGS } from '../src/config/constants';
@@ -1204,6 +1205,215 @@ describe('Killer M1 Attack System (Lunge Dash, Frontal Arc Slash & AI Attack Tri
     });
   });
 });
+
+describe('Humanoid Path Refinement - Thick Raycast, Corner Preservation & Look-Ahead Steering', () => {
+  const tileSize = 64;
+
+  describe('hasClearanceLineOfSight (Thick Raycast / Sphere Cast)', () => {
+    // 6x6 grid with a 2x2 wall block at [1,1] to [2,2]
+    // Wall coordinates: X in [64, 192], Y in [64, 192]
+    const navGrid = [
+      [0, 0, 0, 0, 0, 0],
+      [0, 1, 1, 0, 0, 0],
+      [0, 1, 1, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0]
+    ];
+
+    it('returns true when path has generous clearance (> 45px) from walls', () => {
+      // Row 4 (y = 4 * 64 + 32 = 288): 288 - 192 = 96px de distância da parede
+      const clear = hasClearanceLineOfSight(32, 288, 350, 288, navGrid, 45, tileSize);
+      expect(clear).toBe(true);
+    });
+
+    it('returns false when direct ray passes through solid wall tiles', () => {
+      // Ray passando pelo meio da parede em y = 128
+      const clear = hasClearanceLineOfSight(32, 128, 300, 128, navGrid, 45, tileSize);
+      expect(clear).toBe(false);
+    });
+
+    it('returns false when diagonal ray cuts closer than 45px to a wall corner', () => {
+      // Quina sudeste da parede fica em (192, 192).
+      // Trajeto diagonal de (220, 160) até (160, 220): corta a menos de 20px da quina (192, 192)
+      const clear = hasClearanceLineOfSight(220, 160, 160, 220, navGrid, 45, tileSize);
+      expect(clear).toBe(false);
+    });
+
+    it('allows path starting and ending in valid open cells without false positive', () => {
+      // Segmento seguro em corredor aberto contornando a parede
+      const clear = hasClearanceLineOfSight(288, 32, 288, 288, navGrid, 45, tileSize);
+      expect(clear).toBe(true);
+    });
+  });
+
+  describe('smoothPathNodes - Preservation of Open Corridor Corner Nodes', () => {
+    it('preserves intermediate corner node when shortcut would cut into inflated corner (weightedGrid === 2)', () => {
+      // 6x6 grid com bloco sólido no canto noroeste
+      const navGrid = [
+        [1, 1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0]
+      ];
+      const weightedGrid = buildAiWeightedGrid(navGrid);
+
+      // Raw A* path:
+      // Node 0: (288, 96)  [col 4, row 1 - área aberta, weightedGrid === 0]
+      // Node 1: (288, 288) [col 4, row 4 - quina em área aberta, weightedGrid === 0]
+      // Node 2: (96, 288)  [col 1, row 4 - área aberta, weightedGrid === 0]
+      const rawNodes = [
+        { x: 288, y: 96 },
+        { x: 288, y: 288 },
+        { x: 96, y: 288 }
+      ];
+      const targetPos = { x: 96, y: 288 };
+
+      const smoothed = smoothPathNodes(
+        rawNodes,
+        targetPos,
+        (x1, y1, x2, y2) => hasClearanceLineOfSight(x1, y1, x2, y2, navGrid, 45, 64),
+        weightedGrid,
+        64
+      );
+
+      // Deve preservar o nó intermediário da quina (288, 288) para garantir contorno em arco contínuo
+      expect(smoothed).toHaveLength(3);
+      expect(smoothed[0]).toEqual({ x: 288, y: 96 });
+      expect(smoothed[1]).toEqual({ x: 288, y: 288 });
+      expect(smoothed[2]).toEqual({ x: 96, y: 288 });
+    });
+
+    it('collapses collinear nodes in unobstructed open corridor', () => {
+      const navGrid = [
+        [0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0]
+      ];
+      const weightedGrid = buildAiWeightedGrid(navGrid);
+
+      const rawNodes = [
+        { x: 50, y: 200 },
+        { x: 100, y: 200 },
+        { x: 150, y: 200 },
+        { x: 200, y: 200 }
+      ];
+      const targetPos = { x: 250, y: 200 };
+
+      const smoothed = smoothPathNodes(
+        rawNodes,
+        targetPos,
+        (x1, y1, x2, y2) => hasClearanceLineOfSight(x1, y1, x2, y2, navGrid, 45, 64),
+        weightedGrid,
+        64
+      );
+
+      // Linha reta pura sem obstáculos: colapsa diretamente de início a fim
+      expect(smoothed).toHaveLength(2);
+      expect(smoothed[0]).toEqual({ x: 50, y: 200 });
+      expect(smoothed[1]).toEqual({ x: 250, y: 200 });
+    });
+  });
+
+  describe('KillerAIController - Look-Ahead Steering & 24px Waypoint Transition', () => {
+    it('advances currentPathIndex when distToNode <= 24px', () => {
+      const pawn: any = {
+        x: 100,
+        y: 100,
+        rotation: 0,
+        velocities: [] as Array<{ vx: number; vy: number }>,
+        setVelocity: vi.fn((vx, vy) => pawn.velocities.push({ vx, vy })),
+        stopMovement: vi.fn(),
+        rotateTowards: vi.fn(),
+        playAnimation: vi.fn(),
+        stopAnimation: vi.fn(),
+        isWalkableTile: () => true,
+        hasLineOfSight: () => false,
+        hasClearanceLineOfSight: () => false,
+        calculatePath: vi.fn(),
+        renderVisionGraphic: vi.fn(),
+        renderRouteGraphic: vi.fn(),
+        isAttacking: false
+      };
+
+      const controller = new KillerAIController(pawn);
+      controller.state = 'PATROL';
+      controller.patrolManager.registerAlertDestination({ name: 'Gerador A', x: 500, y: 500 });
+      controller.patrolTarget.set(500, 500);
+
+      // Rota com 3 waypoints: nó 0 em (100, 100), nó 1 em (120, 100) [20px de dist <= 24px], nó 2 em (200, 100)
+      controller.currentPath = [
+        { x: 100, y: 100 },
+        { x: 120, y: 100 },
+        { x: 200, y: 100 }
+      ];
+      controller.currentPathIndex = 1; // Focado no nó 1 a 20px de distância
+
+      const mockGenerators = [{ name: 'Gerador A', x: 500, y: 500, progress: 0, isCompleted: false }] as any;
+      controller.update(16, { x: 9999, y: 9999, isActive: true, sprite: { visible: true } } as any, mockGenerators, {
+        ...DEFAULT_DEBUG_SETTINGS,
+        killerSpeed: 4.6
+      });
+
+      // Como distToNode era 20px (<= 24px), deve ter avançado suavemente para o nó 2 (índice 2)
+      expect(controller.currentPathIndex).toBe(2);
+    });
+
+    it('interpolates steering vector towards next waypoint when within look-ahead range (dist < 36px)', () => {
+      const pawn: any = {
+        x: 100,
+        y: 100,
+        rotation: 0,
+        velocities: [] as Array<{ vx: number; vy: number }>,
+        setVelocity: vi.fn((vx, vy) => pawn.velocities.push({ vx, vy })),
+        stopMovement: vi.fn(),
+        rotateTowards: vi.fn(),
+        playAnimation: vi.fn(),
+        stopAnimation: vi.fn(),
+        isWalkableTile: () => true,
+        hasLineOfSight: () => false,
+        hasClearanceLineOfSight: () => false,
+        calculatePath: vi.fn(),
+        renderVisionGraphic: vi.fn(),
+        renderRouteGraphic: vi.fn(),
+        isAttacking: false
+      };
+
+      const controller = new KillerAIController(pawn);
+      controller.state = 'PATROL';
+      controller.patrolManager.registerAlertDestination({ name: 'Gerador A', x: 500, y: 500 });
+      controller.patrolTarget.set(500, 500);
+
+      // Nó atual a 30px na horizontal (130, 100). Nó seguinte faz curva de 90° ao sul (130, 180).
+      controller.currentPath = [
+        { x: 100, y: 100 },
+        { x: 130, y: 100 },
+        { x: 130, y: 180 }
+      ];
+      controller.currentPathIndex = 1;
+
+      const mockGenerators = [{ name: 'Gerador A', x: 500, y: 500, progress: 0, isCompleted: false }] as any;
+      controller.update(16, { x: 9999, y: 9999, isActive: true, sprite: { visible: true } } as any, mockGenerators, {
+        ...DEFAULT_DEBUG_SETTINGS,
+        killerSpeed: 4.6
+      });
+
+      expect(pawn.velocities.length).toBeGreaterThan(0);
+      const appliedVel = pawn.velocities[pawn.velocities.length - 1];
+
+      // O vetor resultante deve conter componente X positiva (em direção ao nó atual)
+      // E TAMBÉM componente Y positiva (iniciando antecipadamente a curva ao sul para o nó seguinte)
+      expect(appliedVel.vx).toBeGreaterThan(0);
+      expect(appliedVel.vy).toBeGreaterThan(0);
+    });
+  });
+});
+
 
 
 

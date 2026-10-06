@@ -674,7 +674,7 @@ export class SandboxScene extends Phaser.Scene {
 
     const weightedGrid = buildAiWeightedGrid(this.mapData.navGrid);
     this.easystar.setGrid(weightedGrid);
-    this.killer.updateNavGrid(this.mapData.navGrid);
+    this.killer.updateNavGrid(this.mapData.navGrid, weightedGrid);
 
     if (this.generatorPlacer) {
       this.generatorPlacer.navGrid = this.mapData.navGrid;
