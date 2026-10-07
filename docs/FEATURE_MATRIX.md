@@ -38,6 +38,7 @@ Esta matriz documenta o status atual de implementação de todas as mecânicas e
 | **HUD / UI** | Badge de desbloqueio de áudio | `IMPLEMENTADO` | `index.html`, `src/ui/TelemetryHUD.ts` | Aviso discreto com fade-out automático no primeiro clique ou tecla |
 | **HUD / UI** | Efeito visual de vinheta de perseguição | `IMPLEMENTADO` | `src/ui/TelemetryHUD.ts` | Escurecimento radial dinâmico nas bordas da tela por proximidade |
 | **HUD / UI** | Visualização de Debug do Killer (Raios e Waypoints) | `IMPLEMENTADO` | `src/rendering/KillerDebugRenderer.ts`, `src/entities/Killer.ts` | Círculo de terror (32m), raio de visão (14m), linha de perseguição e rota A* com waypoints |
+| **HUD / UI** | Exibição em tela da Versão SemVer | `IMPLEMENTADO` | `src/config/version.ts`, `src/ui/TelemetryHUD.ts`, `index.html` | Tag discreta de versão no HUD superior esquerdo integrada à constante centralizada `APP_VERSION` |
 | **Arquitetura**| Decomposição Modular de gameLogic | `IMPLEMENTADO` | `src/utils/mathUtils.ts`, `src/physics/collisionUtils.ts`, `src/navigation/navigationUtils.ts`, `src/storage/generatorStorage.ts`, `src/gameplay/placementUtils.ts`, `src/gameplay/gameplayEvaluation.ts`, `src/utils/gameLogic.ts` | God File (2.205 linhas) decomposto em módulos coesos (todos ≤ 300 linhas) com barrel de transição |
 | **Arquitetura**| Decomposição Modular do AudioManager | `IMPLEMENTADO` | `src/audio/core/AudioContextManager.ts`, `src/audio/synths/*`, `src/audio/spatial/SpatialAudioService.ts`, `src/audio/AudioManager.ts` | Monolito de 1.315 linhas modularizado em sintetizadores dedicados e fachada orquestradora (< 120 linhas, todos ≤ 250 linhas) |
 | **Arquitetura**| Decomposição Modular da SandboxScene | `IMPLEMENTADO` | `src/controllers/CameraController.ts`, `src/services/AcousticWaveVisualizer.ts`, `src/services/GeneratorLifecycleManager.ts`, `src/scenes/SandboxScene.ts` | God Scene (917 linhas) decomposta em CameraController (208L), AcousticWaveVisualizer (158L), GeneratorLifecycleManager (292L) e cena orquestradora enxuta (348L) |
@@ -45,6 +46,7 @@ Esta matriz documenta o status atual de implementação de todas as mecânicas e
 | **Governança** | Bloqueio de main & Conventional Commits | `IMPLEMENTADO` | `AGENT_RULES.md`, `CONTRIBUTING.md` | Fluxo de branches obrigatório com padrão SemVer |
 | **Governança** | Template de Pull Request | `IMPLEMENTADO` | `.github/PULL_REQUEST_TEMPLATE.md` | Checklist de Quality Gate exigindo testes, build e docs atualizados |
 | **Governança** | Pipeline de CI no GitHub Actions | `IMPLEMENTADO` | `.github/workflows/ci.yml` | Workflow automatizado com Node 20 validando `npm ci`, build e test |
+| **Governança** | Automação e Regras de Release SemVer (v0.5.0) | `IMPLEMENTADO` | `AGENT_RULES.md`, `CONTRIBUTING.md`, `package.json`, `src/config/version.ts` | Regra mandatória de incremento SemVer, Git Tags anotadas e Release Notes a cada merge na main |
 
 ---
 
