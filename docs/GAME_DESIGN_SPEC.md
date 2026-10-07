@@ -84,6 +84,11 @@ O sistema de ataque M1 implementa o modelo de *Lunge Dash* com janelas de recupe
    - **Tolerância de Contato Físico:** `playerRadius + killerRadius + 12px`.
    - **Arco Frontal de Corte:** $\approx 140^\circ$ total ($\pm 70^\circ$ a partir do vetor frontal do assassino; $|\Delta\theta| \le 0.40\pi$).
 
+### 3.3 Arquitetura de Módulos Desacoplados
+- **`KillerCombatSystem` (`src/combat/KillerCombatSystem.ts`):** Encapsula a máquina de estados de ataque (`IDLE`, `LUNGE`, `SUCCESS_RECOVERY`, `MISS_RECOVERY`), timers de lunge (250ms) e recovery (2.7s / 1.5s), cálculo geométrico do corte frontal de 140° e chamadas de dano/áudio.
+- **`KillerDebugRenderer` (`src/rendering/KillerDebugRenderer.ts`):** Centraliza a renderização de primitivas de depuração (círculo de detecção visual, raio de terror de 32m, cone de visão e rota A* com waypoints).
+- **`KillerFSM` (`src/ai/KillerFSM.ts`):** Gerencia as transições e persistência dos estados de alto nível da IA (`PATROL`, `INSPECTING`, `CHASE`, `INVESTIGATING_SOUND`, `STANDBY`, `DESATIVADO`), controlando contadores de inspeção e sniffing.
+
 ---
 
 ## 🔊 4. Sistema Acústico, Furtividade e Percepção
