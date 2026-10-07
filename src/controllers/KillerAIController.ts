@@ -1,8 +1,7 @@
 /**
  * @file KillerAIController.ts
- * @description Controlador de Inteligência Artificial do Assassino (Killer).
- * Gerencia a Máquina de Estados Finitos (PATROL, INSPECTING, CHASE), ciclo orgânico
- * de ronda entre geradores incompletos com pausa de inspeção e detecção prioritária do jogador.
+ * @description Controlador de IA do Assassino (Killer).
+ * Coordena detecção de jogadores, navegação tática e patrulha, delegando a máquina de estados para KillerFSM.
  */
 
 import { DebugSettings } from '../config/constants';
@@ -10,10 +9,8 @@ import type { Player } from '../entities/Player';
 import type { Generator } from '../entities/Generator';
 import {
   GeneratorPatrolManager,
-  PatrolTarget,
   MAJOR_FACILITY_ROOMS,
   getGeneratorStandOffPoint,
-  evaluateKillerAiState,
   isPlayerDetectableByKiller,
   evaluatePatrolArrival,
   shouldKillerKickGenerator,
@@ -21,6 +18,9 @@ import {
   metersToPixels
 } from '../utils/gameLogic';
 import { IKillerController } from './KillerController';
+import { KillerFSM, AIState } from '../ai/KillerFSM';
+
+export type { AIState };
 
 export class Vector2D {
   public x: number;
@@ -38,11 +38,8 @@ export class Vector2D {
 
 function normalizeVec(dx: number, dy: number): { x: number; y: number } {
   const len = Math.hypot(dx, dy);
-  if (len === 0) return { x: 0, y: 0 };
-  return { x: dx / len, y: dy / len };
+  return len === 0 ? { x: 0, y: 0 } : { x: dx / len, y: dy / len };
 }
-
-export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO' | 'STANDBY' | 'INVESTIGATING_SOUND';
 
 export interface IKillerPawn {
   x: number;
@@ -75,10 +72,9 @@ export interface IKillerPawn {
 
 export class KillerAIController implements IKillerController {
   private pawn: IKillerPawn;
-  public state: AIState = 'STANDBY';
+  public fsm: KillerFSM;
   public patrolManager: GeneratorPatrolManager;
 
-  // Alvo e caminhos
   public patrolTarget: Vector2D;
   private currentPath: Array<{ x: number; y: number }> = [];
   private currentPathIndex = 0;
@@ -86,12 +82,6 @@ export class KillerAIController implements IKillerController {
   private hasDirectLOS = false;
   private baseInspectAngle = 0;
   private lastKnownGenerators: Generator[] = [];
-  private isKicking = false;
-  private kickTimer = 0;
-
-  // Investigação acústica de ruído
-  public investigateTimer = 0;
-  public isSniffingSound = false;
 
   // Watchdog Anti-Stuck
   private stuckSampleTimer = 0;
@@ -102,64 +92,42 @@ export class KillerAIController implements IKillerController {
 
   constructor(pawn: IKillerPawn) {
     this.pawn = pawn;
+    this.fsm = new KillerFSM('STANDBY');
     this.patrolManager = new GeneratorPatrolManager();
     this.patrolTarget = new Vector2D(pawn.x, pawn.y);
   }
 
-  public getState(): string {
-    return this.state;
-  }
+  public get state(): AIState { return this.fsm.state; }
+  public set state(s: AIState) { this.fsm.state = s; }
+  public getState(): string { return this.fsm.state; }
+  public get isKickingGenerator(): boolean { return this.fsm.isKicking; }
+  public get stuckTimer(): number { return this.stuckDuration; }
+  public get path(): Array<{ x: number; y: number }> { return this.currentPath; }
+  public get pathIndex(): number { return this.currentPathIndex; }
+  public get investigateTimer(): number { return this.fsm.investigateTimer; }
+  public set investigateTimer(v: number) { this.fsm.investigateTimer = v; }
+  public get isSniffingSound(): boolean { return this.fsm.isSniffingSound; }
+  public set isSniffingSound(v: boolean) { this.fsm.isSniffingSound = v; }
 
-  public get isKickingGenerator(): boolean {
-    return this.isKicking;
-  }
-
-  public get stuckTimer(): number {
-    return this.stuckDuration;
-  }
-
-  public get path(): Array<{ x: number; y: number }> {
-    return this.currentPath;
-  }
-
-  public get pathIndex(): number {
-    return this.currentPathIndex;
-  }
-
-  public setPathForTesting(path: Array<{ x: number; y: number }>, index: number = 0): void {
+  public setPathForTesting(path: Array<{ x: number; y: number }>, index = 0): void {
     this.currentPath = path;
     this.currentPathIndex = index;
   }
 
-  /**
-   * Atualização principal de IA por frame.
-   */
   public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
     this.lastKnownGenerators = generators || [];
-    if (!settings.killerAiEnabled) {
-      this.state = 'DESATIVADO';
-      this.pawn.stopMovement();
-      this.pawn.stopAnimation(0);
+    const prevState = this.fsm.state;
+    const currentState = this.fsm.evaluateGlobalState(settings.killerAiEnabled, generators ? generators.length : 0);
+
+    if (currentState === 'DESATIVADO' || currentState === 'STANDBY') {
+      this.currentPath = []; this.currentPathIndex = 0;
+      this.pawn.stopMovement(); this.pawn.stopAnimation(0);
       this.pawn.renderVisionGraphic(settings, { x: this.pawn.x, y: this.pawn.y }, false);
       this.pawn.renderRouteGraphic(settings, [], 0, false, false, { x: this.pawn.x, y: this.pawn.y });
       return;
     }
 
-    const genCount = generators ? generators.length : 0;
-    if (genCount === 0) {
-      this.state = 'STANDBY';
-      this.currentPath = [];
-      this.currentPathIndex = 0;
-      this.pawn.stopMovement();
-      this.pawn.stopAnimation(0);
-      this.pawn.renderVisionGraphic(settings, { x: this.pawn.x, y: this.pawn.y }, false);
-      this.pawn.renderRouteGraphic(settings, [], 0, false, false, { x: this.pawn.x, y: this.pawn.y });
-      return;
-    }
-
-    const prevState = this.state;
-    this.state = evaluateKillerAiState(this.state, settings.killerAiEnabled, genCount) as AIState;
-    if (prevState === 'STANDBY' && this.state === 'PATROL') {
+    if (prevState === 'STANDBY' && currentState === 'PATROL') {
       this.advanceToNextPatrolGenerator(generators);
     }
 
@@ -174,52 +142,30 @@ export class KillerAIController implements IKillerController {
       const detectionRadius = metersToPixels(settings.detectionRadius);
       const loseRadius = detectionRadius * 1.5;
 
-      // 1. Prioridade Absoluta: Detecção do Jogador -> Transição para CHASE
       if (distToPlayer <= detectionRadius) {
         const hasLOS = this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, player.x, player.y);
-        if (hasLOS || distToPlayer <= 100) {
-          if (this.state !== 'CHASE') {
-            this.patrolManager.interruptInspection();
-            this.isKicking = false;
-            this.isSniffingSound = false;
-            this.investigateTimer = 0;
-            this.state = 'CHASE';
-            this.currentPath = [];
-            this.currentPathIndex = 0;
-            this.pathRecalcTimer = 300;
-          }
+        if ((hasLOS || distToPlayer <= 100) && this.state !== 'CHASE') {
+          this.patrolManager.interruptInspection();
+          this.fsm.startChase();
+          this.currentPath = []; this.currentPathIndex = 0; this.pathRecalcTimer = 300;
         }
       } else if (this.state === 'CHASE' && distToPlayer > loseRadius) {
-        // Perdeu o rastro do jogador -> Volta para PATROL no próximo gerador
-        this.state = 'PATROL';
-        this.currentPath = [];
-        this.currentPathIndex = 0;
+        this.fsm.loseChase();
+        this.currentPath = []; this.currentPathIndex = 0;
         this.advanceToNextPatrolGenerator(generators);
-      } else if (this.state === 'PATROL' && player && player.noiseRadius && player.noiseRadius > 0) {
-        // 2. Percepção Auditiva: Capta ruído ativo do Survivor mesmo através de paredes
-        const noiseDistPixels = metersToPixels(player.noiseRadius);
-        if (distToPlayer <= noiseDistPixels) {
-          this.investigateSound(player.x, player.y);
-        }
+      } else if (this.state === 'PATROL' && player?.noiseRadius && player.noiseRadius > 0) {
+        if (distToPlayer <= metersToPixels(player.noiseRadius)) this.investigateSound(player.x, player.y);
       }
-    } else {
-      // Se o survivor foi desativado enquanto estava em perseguição ou investigação, aborta e retoma patrulha
-      if (this.state === 'CHASE' || this.state === 'INVESTIGATING_SOUND') {
-        this.state = 'PATROL';
-        this.isSniffingSound = false;
-        this.investigateTimer = 0;
-        this.currentPath = [];
-        this.currentPathIndex = 0;
-        this.advanceToNextPatrolGenerator(generators);
-      }
+    } else if (this.state === 'CHASE' || this.state === 'INVESTIGATING_SOUND') {
+      this.fsm.abortToPatrol();
+      this.currentPath = []; this.currentPathIndex = 0;
+      this.advanceToNextPatrolGenerator(generators);
     }
 
-    // 2. Execução dos estados da FSM
     this.handleWatchdogAntiStuck(delta, generators);
 
     if (this.state === 'CHASE' && isPlayerDetectable) {
-      const distToPlayer = Math.hypot(player.x - this.pawn.x, player.y - this.pawn.y);
-      this.handleChaseState(delta, player, distToPlayer, settings);
+      this.handleChaseState(delta, player, Math.hypot(player.x - this.pawn.x, player.y - this.pawn.y), settings);
     } else if (this.state === 'INSPECTING') {
       this.handleInspectingState(delta, generators);
     } else if (this.state === 'INVESTIGATING_SOUND') {
@@ -228,69 +174,73 @@ export class KillerAIController implements IKillerController {
       this.handlePatrolState(delta, generators, settings);
     }
 
-    // 3. Renderização de depuração
     const isChasing = this.state === 'CHASE' && isPlayerDetectable;
-    this.pawn.renderVisionGraphic(
-      settings,
-      isChasing ? { x: player.x, y: player.y } : { x: this.patrolTarget.x, y: this.patrolTarget.y },
-      isChasing
-    );
-    this.pawn.renderRouteGraphic(
-      settings,
-      this.currentPath,
-      this.currentPathIndex,
-      isChasing,
-      this.hasDirectLOS,
-      isChasing ? { x: player.x, y: player.y } : { x: this.patrolTarget.x, y: this.patrolTarget.y }
-    );
+    const targetPos = isChasing ? { x: player.x, y: player.y } : { x: this.patrolTarget.x, y: this.patrolTarget.y };
+    this.pawn.renderVisionGraphic(settings, targetPos, isChasing);
+    this.pawn.renderRouteGraphic(settings, this.currentPath, this.currentPathIndex, isChasing, this.hasDirectLOS, targetPos);
   }
 
-  /**
-   * Estado CHASE: perseguição direta ou contorno via A*.
-   */
-  private handleChaseState(delta: number, player: Player, distToPlayer: number, settings: DebugSettings): void {
-    if (this.pawn.isAttacking) {
-      return;
+  private followPath(delta: number, speed: number, animKey: string, turnSpeed: number): void {
+    if (this.currentPath.length === 0) return;
+    let targetNode = this.currentPath[this.currentPathIndex];
+    let distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+
+    if (distToNode <= 24 && this.currentPathIndex < this.currentPath.length - 1) {
+      this.currentPathIndex++;
+      targetNode = this.currentPath[this.currentPathIndex];
+      distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
     }
 
-    const speed = metersToPixels(settings.killerSpeed);
-    const minBodyDist = settings.hitboxRadius * settings.playerScale * 2.28;
-
-    this.hasDirectLOS = this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, player.x, player.y);
-
-    // Gatilho de Ataque M1 da IA:
-    // No estado CHASE: quando a distância euclidiana for <= 1.8m (~108-110px) com linha de visão direta, dispara o ataque
-    const attackRange = metersToPixels(1.8);
-    if (distToPlayer <= attackRange && this.hasDirectLOS) {
-      if (this.pawn.performAttack && !this.pawn.isAttacking) {
-        const started = this.pawn.performAttack(player);
-        if (started) {
-          return;
-        }
+    if (this.currentPathIndex + 1 < this.currentPath.length) {
+      const nextNode = this.currentPath[this.currentPathIndex + 1];
+      const hasClearLOS = this.pawn.hasClearanceLineOfSight
+        ? this.pawn.hasClearanceLineOfSight(this.pawn.x, this.pawn.y, nextNode.x, nextNode.y, 45)
+        : this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, nextNode.x, nextNode.y);
+      if (hasClearLOS && distToNode <= 36) {
+        this.currentPathIndex++;
+        targetNode = this.currentPath[this.currentPathIndex];
+        distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
       }
     }
 
+    const vCurr = normalizeVec(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+    let moveVec = vCurr;
+    if (this.currentPathIndex < this.currentPath.length - 1 && distToNode < 36) {
+      const nextNode = this.currentPath[this.currentPathIndex + 1];
+      const vNext = normalizeVec(nextNode.x - this.pawn.x, nextNode.y - this.pawn.y);
+      const blend = Math.min(1, Math.max(0, (36 - distToNode) / 36)) * 0.5;
+      moveVec = normalizeVec(vCurr.x * (1 - blend) + vNext.x * blend, vCurr.y * (1 - blend) + vNext.y * blend);
+    }
+
+    this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
+    this.pawn.playAnimation(animKey);
+    const targetAngle = wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
+    this.pawn.rotateTowards(targetAngle, delta, turnSpeed);
+  }
+
+  private handleChaseState(delta: number, player: Player, distToPlayer: number, settings: DebugSettings): void {
+    if (this.pawn.isAttacking) return;
+    const speed = metersToPixels(settings.killerSpeed);
+    const minBodyDist = settings.hitboxRadius * settings.playerScale * 2.28;
+    this.hasDirectLOS = this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, player.x, player.y);
+
+    if (distToPlayer <= metersToPixels(1.8) && this.hasDirectLOS && this.pawn.performAttack && !this.pawn.isAttacking) {
+      if (this.pawn.performAttack(player)) return;
+    }
+
     if (distToPlayer <= minBodyDist) {
-      this.pawn.stopMovement();
-      this.pawn.stopAnimation(0);
-      const dx = player.x - this.pawn.x;
-      const dy = player.y - this.pawn.y;
-      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
+      this.pawn.stopMovement(); this.pawn.stopAnimation(0);
+      const targetAngle = wrapAngle(Math.atan2(player.y - this.pawn.y, player.x - this.pawn.x) - Math.PI / 2);
       this.pawn.rotateTowards(targetAngle, delta, 14);
       return;
     }
 
     if (this.hasDirectLOS) {
       this.currentPath = [];
-      const dx = player.x - this.pawn.x;
-      const dy = player.y - this.pawn.y;
-      const moveVec = normalizeVec(dx, dy);
-
+      const moveVec = normalizeVec(player.x - this.pawn.x, player.y - this.pawn.y);
       this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
       this.pawn.playAnimation('run');
-
-      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
-      this.pawn.rotateTowards(targetAngle, delta, 14);
+      this.pawn.rotateTowards(wrapAngle(Math.atan2(player.y - this.pawn.y, player.x - this.pawn.x) - Math.PI / 2), delta, 14);
     } else {
       this.pathRecalcTimer += delta;
       if (this.pathRecalcTimer >= 250 || this.currentPath.length === 0) {
@@ -300,402 +250,185 @@ export class KillerAIController implements IKillerController {
           this.currentPathIndex = path.length > 1 ? 1 : 0;
         });
       }
-
       if (this.currentPath.length > 0) {
-        let targetNode = this.currentPath[this.currentPathIndex];
-        let distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-
-        // Considera o waypoint alcançado com antecedência suave (dist <= 24px)
-        if (distToNode <= 24 && this.currentPathIndex < this.currentPath.length - 1) {
-          this.currentPathIndex++;
-          targetNode = this.currentPath[this.currentPathIndex];
-          distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-        }
-
-        // Se houver próximo nó com passagem livre ampla (clearance 45px), avalia corte antecipado suave
-        if (this.currentPathIndex + 1 < this.currentPath.length) {
-          const nextNode = this.currentPath[this.currentPathIndex + 1];
-          const hasClearLOS = this.pawn.hasClearanceLineOfSight
-            ? this.pawn.hasClearanceLineOfSight(this.pawn.x, this.pawn.y, nextNode.x, nextNode.y, 45)
-            : this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, nextNode.x, nextNode.y);
-          if (hasClearLOS && distToNode <= 36) {
-            this.currentPathIndex++;
-            targetNode = this.currentPath[this.currentPathIndex];
-            distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-          }
-        }
-
-        const vCurr = normalizeVec(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-        let moveVec = vCurr;
-
-        // Look-Ahead Steering: interpolação vetorial suave em direção ao nó seguinte (dist < 36px)
-        if (this.currentPathIndex < this.currentPath.length - 1 && distToNode < 36) {
-          const nextNode = this.currentPath[this.currentPathIndex + 1];
-          const vNext = normalizeVec(nextNode.x - this.pawn.x, nextNode.y - this.pawn.y);
-          const blendFactor = Math.min(1, Math.max(0, (36 - distToNode) / 36)) * 0.5;
-          moveVec = normalizeVec(
-            vCurr.x * (1 - blendFactor) + vNext.x * blendFactor,
-            vCurr.y * (1 - blendFactor) + vNext.y * blendFactor
-          );
-        }
-
-        this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
-        this.pawn.playAnimation('run');
-
-        const targetAngle = wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
-        this.pawn.rotateTowards(targetAngle, delta, 12);
+        this.followPath(delta, speed, 'run', 12);
       } else {
-        const dx = player.x - this.pawn.x;
-        const dy = player.y - this.pawn.y;
-        const moveVec = normalizeVec(dx, dy);
+        const moveVec = normalizeVec(player.x - this.pawn.x, player.y - this.pawn.y);
         this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
       }
     }
   }
 
-  /**
-   * Estado INSPECTING: pausa de inspeção ou ação de chute no gerador voltado para o motor.
-   */
   private handleInspectingState(delta: number, generators: Generator[]): void {
     this.pawn.stopMovement();
     this.pawn.stopAnimation(0);
-
-    if (this.isKicking) {
-      this.kickTimer -= delta;
-      // Mantém o Killer voltado diretamente para o gerador durante o impacto do chute
-      this.pawn.rotateTowards(this.baseInspectAngle, delta, 12);
-      if (this.kickTimer <= 0) {
-        this.isKicking = false;
-        this.state = 'PATROL';
-        this.advanceToNextPatrolGenerator(generators);
-      }
+    if (this.fsm.isKicking) {
+      if (this.fsm.tickKick(delta)) this.advanceToNextPatrolGenerator(generators);
+      else this.pawn.rotateTowards(this.baseInspectAngle, delta, 12);
       return;
     }
 
     const { isComplete, lookOffset } = this.patrolManager.tickInspection(delta);
     this.pawn.rotateTowards(this.baseInspectAngle + lookOffset, delta, 4);
-
     if (isComplete) {
-      // Concluiu inspeção -> avança ciclicamente para o próximo gerador
-      this.state = 'PATROL';
+      this.fsm.completeInspection();
       this.advanceToNextPatrolGenerator(generators);
     }
   }
 
-  /**
-   * Estado PATROL: navega em direção ao gerador ou sala alvo.
-   */
   private handlePatrolState(delta: number, generators: Generator[], settings: DebugSettings): void {
     if (!this.patrolManager.currentDestination) {
       this.advanceToNextPatrolGenerator(generators);
       return;
     }
-
     const distToTarget = Math.hypot(this.patrolTarget.x - this.pawn.x, this.patrolTarget.y - this.pawn.y);
-    const isTargetingGenerator = Boolean(
-      this.patrolManager.currentDestination && this.patrolManager.currentDestination.type === 'generator'
-    );
-    const currentDest = this.patrolManager.currentDestination;
-    const distToGen = (isTargetingGenerator && currentDest)
-      ? Math.hypot(currentDest.x - this.pawn.x, currentDest.y - this.pawn.y)
-      : distToTarget;
+    const dest = this.patrolManager.currentDestination;
+    const isTargetingGen = Boolean(dest && dest.type === 'generator');
+    const distToGen = (isTargetingGen && dest) ? Math.hypot(dest.x - this.pawn.x, dest.y - this.pawn.y) : distToTarget;
 
-    // Chegou ao ponto frontal do gerador (stand-off) ou ao centro do cômodo
-    const hasArrived = evaluatePatrolArrival(distToTarget, isTargetingGenerator, distToGen);
-
-    if (hasArrived) {
-      this.pawn.stopMovement();
-      this.pawn.stopAnimation(0);
-
-      // Inicia inspeção com tempo configurável (inspectionTime, padrão: 2.5s)
-      this.state = 'INSPECTING';
-      if (isTargetingGenerator && currentDest) {
-        this.baseInspectAngle = wrapAngle(Math.atan2(currentDest.y - this.pawn.y, currentDest.x - this.pawn.x) - Math.PI / 2);
-      } else {
-        this.baseInspectAngle = this.pawn.rotation;
-      }
+    if (evaluatePatrolArrival(distToTarget, isTargetingGen, distToGen)) {
+      this.pawn.stopMovement(); this.pawn.stopAnimation(0);
+      this.baseInspectAngle = (isTargetingGen && dest)
+        ? wrapAngle(Math.atan2(dest.y - this.pawn.y, dest.x - this.pawn.x) - Math.PI / 2)
+        : this.pawn.rotation;
       this.currentPath = [];
 
-      // Avalia se o gerador alvo pode ser chutado (>0%, não concluído, não regredindo)
-      const targetGen = (isTargetingGenerator && currentDest)
-        ? generators.find((g) => g.name === currentDest.name || Math.hypot(g.x - currentDest.x, g.y - currentDest.y) <= 130)
+      const targetGen = (isTargetingGen && dest)
+        ? generators.find((g) => g.name === dest.name || Math.hypot(g.x - dest.x, g.y - dest.y) <= 130)
         : undefined;
 
       if (targetGen && shouldKillerKickGenerator(targetGen)) {
-        this.isKicking = true;
-        this.kickTimer = 1500; // ~1.5s voltado para o motor
+        this.fsm.startInspecting(true, 1500);
         targetGen.kickGenerator();
         this.patrolManager.startInspection(1500);
       } else {
-        this.isKicking = false;
-        const inspectMs = (settings.inspectionTime ?? 2.5) * 1000;
-        this.patrolManager.startInspection(inspectMs);
+        this.fsm.startInspecting(false);
+        this.patrolManager.startInspection((settings.inspectionTime ?? 2.5) * 1000);
       }
       return;
     }
 
     const speed = metersToPixels(settings.killerSpeed);
-
-    // Se houver linha direta de visão COM FOLGA DE PASSAGEM (45px) até a área segura do gerador, caminhar direto
     const canWalkDirectly = this.pawn.hasClearanceLineOfSight
       ? this.pawn.hasClearanceLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, 45)
       : this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y);
 
     if (canWalkDirectly) {
       this.currentPath = [];
-      const dx = this.patrolTarget.x - this.pawn.x;
-      const dy = this.patrolTarget.y - this.pawn.y;
-      const moveVec = normalizeVec(dx, dy);
-
+      const moveVec = normalizeVec(this.patrolTarget.x - this.pawn.x, this.patrolTarget.y - this.pawn.y);
       this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
       this.pawn.playAnimation('walk');
-
-      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
-      this.pawn.rotateTowards(targetAngle, delta, 5);
+      this.pawn.rotateTowards(wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2), delta, 5);
+    } else if (this.currentPath.length > 0) {
+      this.followPath(delta, speed, 'walk', 6);
     } else {
-      if (this.currentPath.length > 0) {
-        let targetNode = this.currentPath[this.currentPathIndex];
-        let distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-
-        // Considera o waypoint alcançado com antecedência suave (dist <= 24px)
-        if (distToNode <= 24 && this.currentPathIndex < this.currentPath.length - 1) {
-          this.currentPathIndex++;
-          targetNode = this.currentPath[this.currentPathIndex];
-          distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-        }
-
-        const vCurr = normalizeVec(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-        let moveVec = vCurr;
-
-        // Look-Ahead Steering: interpolação vetorial suave em direção ao nó seguinte (dist < 36px)
-        if (this.currentPathIndex < this.currentPath.length - 1 && distToNode < 36) {
-          const nextNode = this.currentPath[this.currentPathIndex + 1];
-          const vNext = normalizeVec(nextNode.x - this.pawn.x, nextNode.y - this.pawn.y);
-          const blendFactor = Math.min(1, Math.max(0, (36 - distToNode) / 36)) * 0.5;
-          moveVec = normalizeVec(
-            vCurr.x * (1 - blendFactor) + vNext.x * blendFactor,
-            vCurr.y * (1 - blendFactor) + vNext.y * blendFactor
-          );
-        }
-
-        this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
-        this.pawn.playAnimation('walk');
-
-        const targetAngle = wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
-        this.pawn.rotateTowards(targetAngle, delta, 6);
-      } else {
-        this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
-          this.currentPath = path;
-          this.currentPathIndex = path.length > 1 ? 1 : 0;
-        });
-      }
+      this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
+        this.currentPath = path; this.currentPathIndex = path.length > 1 ? 1 : 0;
+      });
     }
   }
 
-  /**
-   * Seleciona o próximo gerador da fila de patrulha e calcula rota A*.
-   */
   public advanceToNextPatrolGenerator(generators: Generator[]): void {
     if (!generators || generators.length === 0) {
-      this.state = 'STANDBY';
-      this.currentPath = [];
-      this.currentPathIndex = 0;
+      this.fsm.transitionTo('STANDBY');
+      this.currentPath = []; this.currentPathIndex = 0;
       return;
     }
-
-    const candidateGens = (generators || []).map((g) => ({
-      name: g.name,
-      x: g.x,
-      y: g.y,
-      progress: g.progress,
-      isCompleted: g.isCompleted
-    }));
-
+    const candidateGens = generators.map((g) => ({ name: g.name, x: g.x, y: g.y, progress: g.progress, isCompleted: g.isCompleted }));
     const nextDest = this.patrolManager.getNextDestination(candidateGens, MAJOR_FACILITY_ROOMS);
     if (nextDest) {
       if (nextDest.type === 'generator') {
         const matchingGen = generators.find((g) => g.name === nextDest.name);
-        const navGrid = this.pawn.getNavGrid ? this.pawn.getNavGrid() : undefined;
         const standOff = getGeneratorStandOffPoint(
           { x: nextDest.x, y: nextDest.y, rotation: matchingGen?.rotation ?? 0 },
           { x: this.pawn.x, y: this.pawn.y },
           (wx, wy) => this.pawn.isWalkableTile(wx, wy),
           112,
-          navGrid
+          this.pawn.getNavGrid ? this.pawn.getNavGrid() : undefined
         );
         this.patrolTarget.set(standOff.x, standOff.y);
       } else {
         this.patrolTarget.set(nextDest.x, nextDest.y);
       }
     }
-
-    this.currentPath = [];
-    this.currentPathIndex = 0;
+    this.currentPath = []; this.currentPathIndex = 0;
     this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
-      this.currentPath = path;
-      this.currentPathIndex = path.length > 1 ? 1 : 0;
+      this.currentPath = path; this.currentPathIndex = path.length > 1 ? 1 : 0;
     });
   }
 
-  /**
-   * Estado INVESTIGATING_SOUND: move em direção ao ponto de ruído
-   * e, ao chegar sem avistar o Survivor, permanece farejando a área por ~2.0s antes de retomar patrulha.
-   */
-  private handleInvestigatingSoundState(
-    delta: number,
-    player: Player,
-    generators: Generator[],
-    settings: DebugSettings
-  ): void {
-    // 1. Fase de Farejamento / Inspeção local após chegar ao ponto do som
-    if (this.isSniffingSound) {
-      this.pawn.stopMovement();
-      this.pawn.stopAnimation(0);
-      this.investigateTimer -= delta;
-
-      // Movimento sutil da cabeça / varredura visual angular enquanto fareja (~0.4 rad)
-      const sweepAngle = Math.sin((2000 - this.investigateTimer) * 0.005) * 0.45;
+  private handleInvestigatingSoundState(delta: number, _player: Player, generators: Generator[], settings: DebugSettings): void {
+    if (this.fsm.isSniffingSound) {
+      this.pawn.stopMovement(); this.pawn.stopAnimation(0);
+      const { isComplete, sweepAngle } = this.fsm.tickSniffing(delta);
       this.pawn.rotateTowards(this.baseInspectAngle + sweepAngle, delta, 3);
-
-      if (this.investigateTimer <= 0) {
-        this.isSniffingSound = false;
-        this.state = 'PATROL';
-        this.advanceToNextPatrolGenerator(generators);
-      }
+      if (isComplete) this.advanceToNextPatrolGenerator(generators);
       return;
     }
 
-    // 2. Navegação em direção ao ponto do ruído
     const distToTarget = Math.hypot(this.patrolTarget.x - this.pawn.x, this.patrolTarget.y - this.pawn.y);
-
-    // Chegou à coordenada do som (tolerância de 36px)
     if (distToTarget <= 36) {
-      this.pawn.stopMovement();
-      this.pawn.stopAnimation(0);
-      this.isSniffingSound = true;
-      this.investigateTimer = 2000; // ~2.0s farejando a área
+      this.pawn.stopMovement(); this.pawn.stopAnimation(0);
+      this.fsm.startSniffing(2000);
       this.baseInspectAngle = this.pawn.rotation;
       this.currentPath = [];
       return;
     }
 
     const speed = metersToPixels(settings.killerSpeed);
-
-    // Linha de visão direta com folga de corpo (45px)
     const canWalkDirectly = this.pawn.hasClearanceLineOfSight
       ? this.pawn.hasClearanceLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, 45)
       : this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y);
 
     if (canWalkDirectly) {
       this.currentPath = [];
-      const dx = this.patrolTarget.x - this.pawn.x;
-      const dy = this.patrolTarget.y - this.pawn.y;
-      const moveVec = normalizeVec(dx, dy);
-
+      const moveVec = normalizeVec(this.patrolTarget.x - this.pawn.x, this.patrolTarget.y - this.pawn.y);
       this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
       this.pawn.playAnimation('walk');
-
-      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
-      this.pawn.rotateTowards(targetAngle, delta, 5);
-    } else {
-      if (this.currentPath.length > 0) {
-        let targetNode = this.currentPath[this.currentPathIndex];
-        let distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-
-        if (distToNode <= 24 && this.currentPathIndex < this.currentPath.length - 1) {
-          this.currentPathIndex++;
-          targetNode = this.currentPath[this.currentPathIndex];
-          distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-        }
-
-        const vCurr = normalizeVec(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
-        let moveVec = vCurr;
-
-        // Look-Ahead Steering: interpolação vetorial suave em direção ao nó seguinte (dist < 36px)
-        if (this.currentPathIndex < this.currentPath.length - 1 && distToNode < 36) {
-          const nextNode = this.currentPath[this.currentPathIndex + 1];
-          const vNext = normalizeVec(nextNode.x - this.pawn.x, nextNode.y - this.pawn.y);
-          const blendFactor = Math.min(1, Math.max(0, (36 - distToNode) / 36)) * 0.5;
-          moveVec = normalizeVec(
-            vCurr.x * (1 - blendFactor) + vNext.x * blendFactor,
-            vCurr.y * (1 - blendFactor) + vNext.y * blendFactor
-          );
-        }
-
-        this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
-        this.pawn.playAnimation('walk');
-
-        const targetAngle = wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
-        this.pawn.rotateTowards(targetAngle, delta, 6);
-
-        // Se alcançou o último waypoint do caminho e está próximo do alvo
-        if (this.currentPathIndex === this.currentPath.length - 1 && distToNode <= 28) {
-          this.pawn.stopMovement();
-          this.pawn.stopAnimation(0);
-          this.isSniffingSound = true;
-          this.investigateTimer = 2000;
-          this.baseInspectAngle = this.pawn.rotation;
-          this.currentPath = [];
-        }
-      } else {
-        this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
-          this.currentPath = path;
-          this.currentPathIndex = path.length > 1 ? 1 : 0;
-        });
+      this.pawn.rotateTowards(wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2), delta, 5);
+    } else if (this.currentPath.length > 0) {
+      this.followPath(delta, speed, 'walk', 6);
+      const node = this.currentPath[this.currentPathIndex];
+      if (this.currentPathIndex === this.currentPath.length - 1 && node && Math.hypot(node.x - this.pawn.x, node.y - this.pawn.y) <= 28) {
+        this.pawn.stopMovement(); this.pawn.stopAnimation(0);
+        this.fsm.startSniffing(2000);
+        this.baseInspectAngle = this.pawn.rotation;
+        this.currentPath = [];
       }
+    } else {
+      this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
+        this.currentPath = path; this.currentPathIndex = path.length > 1 ? 1 : 0;
+      });
     }
   }
 
-  /**
-   * Alerta sonoro imediato: define o alvo de navegação como as coordenadas do ruído
-   * e coloca o Killer no estado 'INVESTIGATING_SOUND'.
-   */
   public investigateSound(x: number, y: number): void {
-    if (this.state === 'DESATIVADO' || this.state === 'STANDBY' || this.state === 'CHASE') return;
+    if (!this.fsm.canInvestigateSound()) return;
     this.patrolManager.interruptInspection();
-    this.isKicking = false;
-    this.isSniffingSound = false;
-    this.investigateTimer = 0;
-    this.state = 'INVESTIGATING_SOUND';
+    this.fsm.startInvestigatingSound();
     this.patrolTarget.set(x, y);
-    this.currentPath = [];
-    this.currentPathIndex = 0;
-    this.stuckSampleTimer = 0;
-    this.stuckDuration = 0;
-    this.lastSampleX = this.pawn.x;
-    this.lastSampleY = this.pawn.y;
+    this.currentPath = []; this.currentPathIndex = 0;
+    this.stuckSampleTimer = 0; this.stuckDuration = 0;
+    this.lastSampleX = this.pawn.x; this.lastSampleY = this.pawn.y;
     this.hasInitializedSamplePos = true;
     this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
-      this.currentPath = path;
-      this.currentPathIndex = path.length > 1 ? 1 : 0;
+      this.currentPath = path; this.currentPathIndex = path.length > 1 ? 1 : 0;
     });
   }
 
-  /**
-   * Alerta imediato de ruído (falha de Skill Check em gerador).
-   */
-  public alertToNoise(
-    x: number,
-    y: number,
-    targetGen?: Generator | { name: string; x: number; y: number; rotation?: number }
-  ): void {
-    if (this.state === 'DESATIVADO' || this.state === 'STANDBY') return;
+  public alertToNoise(x: number, y: number, targetGen?: Generator | { name: string; x: number; y: number; rotation?: number }): void {
+    if (!this.fsm.canAlertNoise()) return;
     this.patrolManager.interruptInspection();
-    this.isKicking = false;
-    this.state = 'PATROL';
+    this.fsm.state = 'PATROL';
 
-    const gen =
-      targetGen ||
-      this.lastKnownGenerators.find((g) => Math.hypot(g.x - x, g.y - y) <= 130);
-
+    const gen = targetGen || this.lastKnownGenerators.find((g) => Math.hypot(g.x - x, g.y - y) <= 130);
     if (gen) {
-      const navGrid = this.pawn.getNavGrid ? this.pawn.getNavGrid() : undefined;
       const standOff = getGeneratorStandOffPoint(
         { x: gen.x, y: gen.y, rotation: gen.rotation ?? 0 },
         { x: this.pawn.x, y: this.pawn.y },
         (wx, wy) => this.pawn.isWalkableTile(wx, wy),
         112,
-        navGrid
+        this.pawn.getNavGrid ? this.pawn.getNavGrid() : undefined
       );
       this.patrolTarget.set(standOff.x, standOff.y);
       this.patrolManager.registerAlertDestination(gen);
@@ -704,98 +437,54 @@ export class KillerAIController implements IKillerController {
       this.patrolManager.registerAlertDestination({ name: 'Ruído Detectado', x, y });
     }
 
-    this.currentPath = [];
-    this.currentPathIndex = 0;
-    this.stuckSampleTimer = 0;
-    this.stuckDuration = 0;
-    this.lastSampleX = this.pawn.x;
-    this.lastSampleY = this.pawn.y;
+    this.currentPath = []; this.currentPathIndex = 0;
+    this.stuckSampleTimer = 0; this.stuckDuration = 0;
+    this.lastSampleX = this.pawn.x; this.lastSampleY = this.pawn.y;
     this.hasInitializedSamplePos = true;
     this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
-      this.currentPath = path;
-      this.currentPathIndex = path.length > 1 ? 1 : 0;
+      this.currentPath = path; this.currentPathIndex = path.length > 1 ? 1 : 0;
     });
   }
 
-  /**
-   * Watchdog Anti-Stuck: monitora o deslocamento real do Killer a cada ~300ms/400ms.
-   * Se o Killer estiver em estado de movimento ('PATROL' ou 'CHASE'):
-   * - Se deslocar MENOS de 8 pixels em 400ms (indicando que está travado/patinando contra um colisor):
-   *   a) Pula imediatamente para o próximo waypoint do caminho (this.currentPathIndex++).
-   *   b) Aplica um pequeno impulso perpendicular à rota/quina para descolar do obstáculo.
-   * - Se permanecer estagnado por mais de 800ms:
-   *   a) Cancela a rota atual.
-   *   b) Força advanceToNextPatrolGenerator() (em PATROL) ou novo cálculo de rota (em CHASE).
-   */
   public handleWatchdogAntiStuck(delta: number, generators: Generator[]): void {
-    const isMovingState =
-      (this.state === 'PATROL' || this.state === 'CHASE' || this.state === 'INVESTIGATING_SOUND') &&
-      !this.pawn.isAttacking &&
-      !this.isSniffingSound;
-    if (!isMovingState) {
-      this.stuckSampleTimer = 0;
-      this.stuckDuration = 0;
-      this.lastSampleX = this.pawn.x;
-      this.lastSampleY = this.pawn.y;
+    if (!this.fsm.isMovingState(Boolean(this.pawn.isAttacking))) {
+      this.stuckSampleTimer = 0; this.stuckDuration = 0;
+      this.lastSampleX = this.pawn.x; this.lastSampleY = this.pawn.y;
       this.hasInitializedSamplePos = true;
       return;
     }
 
     if (!this.hasInitializedSamplePos) {
-      this.lastSampleX = this.pawn.x;
-      this.lastSampleY = this.pawn.y;
+      this.lastSampleX = this.pawn.x; this.lastSampleY = this.pawn.y;
       this.hasInitializedSamplePos = true;
       return;
     }
 
     this.stuckSampleTimer += delta;
     if (this.stuckSampleTimer >= 300) {
-      const distMoved = Math.hypot(
-        this.pawn.x - this.lastSampleX,
-        this.pawn.y - this.lastSampleY
-      );
-
-      if (distMoved < 8) {
+      if (Math.hypot(this.pawn.x - this.lastSampleX, this.pawn.y - this.lastSampleY) < 8) {
         this.stuckDuration += this.stuckSampleTimer;
 
-        // Estágio 1: Estagnado há >= 400ms -> Pula para o próximo nó do A* e aplica impulso perpendicular
         if (this.stuckDuration >= 400 && this.stuckDuration < 800) {
-          if (this.currentPath.length > 0 && this.currentPathIndex < this.currentPath.length - 1) {
-            this.currentPathIndex++;
-          }
-          let nudgeX = 0;
-          let nudgeY = 0;
+          if (this.currentPath.length > 0 && this.currentPathIndex < this.currentPath.length - 1) this.currentPathIndex++;
+          let angle = this.pawn.rotation + Math.PI / 2;
           if (this.currentPath.length > 0 && this.currentPath[this.currentPathIndex]) {
-            const targetNode = this.currentPath[this.currentPathIndex];
-            const angle = Math.atan2(targetNode.y - this.pawn.y, targetNode.x - this.pawn.x);
-            nudgeX = -Math.sin(angle) * 75;
-            nudgeY = Math.cos(angle) * 75;
-          } else {
-            const angle = this.pawn.rotation + Math.PI / 2;
-            nudgeX = Math.cos(angle) * 75;
-            nudgeY = Math.sin(angle) * 75;
+            const target = this.currentPath[this.currentPathIndex];
+            angle = Math.atan2(target.y - this.pawn.y, target.x - this.pawn.x);
           }
-          this.pawn.setVelocity(nudgeX, nudgeY);
+          this.pawn.setVelocity(-Math.sin(angle) * 75, Math.cos(angle) * 75);
         }
 
-        // Estágio 2: Estagnado há >= 800ms -> Cancela rota e força avanço para o próximo gerador / recalcula rota
         if (this.stuckDuration >= 800) {
-          this.currentPath = [];
-          this.currentPathIndex = 0;
-          this.stuckDuration = 0;
-          if (this.state === 'PATROL' || this.state === 'INVESTIGATING_SOUND') {
-            this.advanceToNextPatrolGenerator(generators);
-          } else if (this.state === 'CHASE') {
-            this.pathRecalcTimer = 300;
-          }
+          this.currentPath = []; this.currentPathIndex = 0; this.stuckDuration = 0;
+          if (this.state === 'PATROL' || this.state === 'INVESTIGATING_SOUND') this.advanceToNextPatrolGenerator(generators);
+          else if (this.state === 'CHASE') this.pathRecalcTimer = 300;
         }
       } else {
         this.stuckDuration = 0;
       }
-
       this.stuckSampleTimer = 0;
-      this.lastSampleX = this.pawn.x;
-      this.lastSampleY = this.pawn.y;
+      this.lastSampleX = this.pawn.x; this.lastSampleY = this.pawn.y;
     }
   }
 }

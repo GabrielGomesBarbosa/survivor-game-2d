@@ -1,57 +1,52 @@
 /**
  * @file Killer.ts
  * @description Entidade física do Assassino (Killer / Pawn).
- * Executa comandos de controle de baixo nível (movimentação, rotação, animação e renderização de depuração),
- * delegando as decisões estratégicas da IA ao seu controlador desacoplado (KillerAIController).
+ * Focado na física Arcade, movimentação, colisão sólida e atuação do peão,
+ * delegando o combate M1 a KillerCombatSystem e depuração visual a KillerDebugRenderer.
  */
 
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
-import { DebugSettings, TILE_SIZE, COLS, ROWS, TERROR_RADIUS_METERS } from '../config/constants';
-import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, hasClearanceLineOfSight, buildAiWeightedGrid, metersToPixels, checkAttackHit, wrapAngle } from '../utils/gameLogic';
-import { AudioManager } from '../audio/AudioManager';
+import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
+import { resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, hasClearanceLineOfSight, buildAiWeightedGrid } from '../utils/gameLogic';
 import { Player } from './Player';
-
 import { Generator } from './Generator';
 import { IKillerController } from '../controllers/KillerController';
 import { KillerAIController, IKillerPawn } from '../controllers/KillerAIController';
+import { KillerCombatSystem, KillerAttackState, KillerAttackCallbacks, ICombatPawn } from '../combat/KillerCombatSystem';
+import { KillerDebugRenderer } from '../rendering/KillerDebugRenderer';
 
-export type KillerAttackState = 'IDLE' | 'WINDUP' | 'LUNGE' | 'SUCCESS_RECOVERY' | 'MISS_RECOVERY';
+export type { KillerAttackState, KillerAttackCallbacks };
 
-export interface KillerAttackCallbacks {
-  onAttackStart?: () => void;
-  onAttackHit?: (survivor: Player) => void;
-  onAttackMiss?: () => void;
-  onRecoveryEnd?: () => void;
+function checkRaysIntersectSolids(x1: number, y1: number, x2: number, y2: number, clearance: number, solids: Phaser.GameObjects.Rectangle[]): boolean {
+  const dx = x2 - x1, dy = y2 - y1, dist = Math.hypot(dx, dy);
+  if (dist < 2) return false;
+  const pX = (-dy / dist) * clearance, pY = (dx / dist) * clearance;
+  const rays = [
+    new Phaser.Geom.Line(x1, y1, x2, y2),
+    new Phaser.Geom.Line(x1 + pX, y1 + pY, x2 + pX, y2 + pY),
+    new Phaser.Geom.Line(x1 - pX, y1 - pY, x2 - pX, y2 - pY)
+  ];
+  for (const solid of solids) {
+    const b = solid.body as Phaser.Physics.Arcade.StaticBody;
+    if (b && rays.some((r) => Phaser.Geom.Intersects.LineToRectangle(r, new Phaser.Geom.Rectangle(b.x, b.y, b.width, b.height)))) return true;
+  }
+  return false;
 }
 
-export class Killer implements IKillerPawn {
+export class Killer implements IKillerPawn, ICombatPawn {
   public sprite: Phaser.Physics.Arcade.Sprite;
   public controller!: IKillerController;
 
-  // Trava de integridade contra penetração em paredes e imovabilidade estável
   public lastSafeX = 1280;
   public lastSafeY = 224;
   public lastStableX = 1280;
   public lastStableY = 224;
 
-  // Estado e ciclo do Sistema de Ataque M1 (Lunge Dash & Blade Wipe)
-  public isAttacking: boolean = false;
-  public attackState: KillerAttackState = 'IDLE';
-  public attackTimer: number = 0;
-  public attackCallbacks: KillerAttackCallbacks = {};
-  public targetSurvivor?: Player;
-
-  // Configurações ativas de depuração
+  private combatSystem: KillerCombatSystem;
+  private debugRenderer: KillerDebugRenderer;
   private settings: DebugSettings;
-
-  // Ataque e colisão
   private lastAttackTime = 0;
-
-  // Gráficos de depuração
-  private visionGraphic: Phaser.GameObjects.Graphics;
-  private aStarGraphic: Phaser.GameObjects.Graphics;
-
   private scene: Phaser.Scene;
   private easystar: EasyStar.js;
   private navGrid: number[][];
@@ -59,9 +54,6 @@ export class Killer implements IKillerPawn {
   private walls: Phaser.Physics.Arcade.StaticGroup;
   private obstacles: Phaser.Physics.Arcade.StaticGroup;
 
-  /**
-   * Instancia e inicializa o Killer.
-   */
   constructor(
     scene: Phaser.Scene,
     x: number,
@@ -79,591 +71,191 @@ export class Killer implements IKillerPawn {
     this.weightedGrid = buildAiWeightedGrid(navGrid);
     this.walls = walls;
     this.obstacles = obstacles;
-    this.lastSafeX = x;
-    this.lastSafeY = y;
-    this.lastStableX = x;
-    this.lastStableY = y;
+    this.lastSafeX = x; this.lastSafeY = y;
+    this.lastStableX = x; this.lastStableY = y;
 
-    // Sprite físico do Killer (clone com tom avermelhado e escala 1.28x)
     this.sprite = scene.physics.add.sprite(x, y, 'survivor', 0);
-    this.sprite.setTint(0xcc2222);
-    this.sprite.setOrigin(0.5, 0.5);
-    this.sprite.setCollideWorldBounds(true);
-    this.sprite.setDepth(9);
+    this.sprite.setTint(0xcc2222).setOrigin(0.5, 0.5).setCollideWorldBounds(true).setDepth(9);
 
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
-    body.setDamping(false);
-    body.setDrag(0, 0);
-    body.setImmovable(true);
-    body.pushable = false;
-    body.mass = 100000;
+    body.setDamping(false).setDrag(0, 0).setImmovable(true);
+    body.pushable = false; body.mass = 100000;
 
     this.updateHitbox(settings.hitboxRadius, settings.playerScale);
-
-    // Gráficos de depuração
-    this.visionGraphic = scene.add.graphics();
-    this.visionGraphic.setDepth(5);
-
-    this.aStarGraphic = scene.add.graphics();
-    this.aStarGraphic.setDepth(6);
-
-    // Inicializa com o controlador padrão de IA
+    this.combatSystem = new KillerCombatSystem(this);
+    this.debugRenderer = new KillerDebugRenderer(scene);
     this.setController(new KillerAIController(this));
   }
 
-  /**
-   * Permite alternar dinamicamente o controlador do Killer (bot de IA, jogador humano ou rede multiplayer).
-   */
-  public setController(controller: IKillerController): void {
-    this.controller = controller;
-  }
+  public setController(controller: IKillerController): void { this.controller = controller; }
 
   public get state(): string {
-    if (this.settings && !this.settings.killerAiEnabled) {
-      return 'DESATIVADO';
-    }
-    if (this.isAttacking) {
-      if (this.attackState === 'LUNGE') return 'ATTACKING';
-      if (this.attackState === 'SUCCESS_RECOVERY') return 'RECOVERY (HIT)';
-      if (this.attackState === 'MISS_RECOVERY') return 'RECOVERY (MISS)';
-    }
-    return this.controller ? this.controller.getState() : 'PATROL';
+    if (this.settings && !this.settings.killerAiEnabled) return 'DESATIVADO';
+    return this.combatSystem.getStateLabel() || (this.controller ? this.controller.getState() : 'PATROL');
   }
 
-  /**
-   * Recalibra a hitbox do Killer proporcionalmente ao Player (28% maior).
-   */
-  public updateHitbox(hitboxRadius: number, playerScale: number): void {
-    const killerScale = playerScale * 1.28;
-    this.sprite.setScale(killerScale);
-    const frameW = this.sprite.frame.width;
-    const frameH = this.sprite.frame.height;
-    const radius = hitboxRadius;
-    const offsetX = frameW * 0.5 - radius;
-    const offsetY = frameH * 0.5 - radius;
+  // Delegados de combate M1 para compatibilidade de API
+  public get isAttacking(): boolean { return this.combatSystem.isAttacking; }
+  public set isAttacking(v: boolean) { this.combatSystem.isAttacking = v; }
+  public get attackState(): KillerAttackState { return this.combatSystem.attackState; }
+  public set attackState(v: KillerAttackState) { this.combatSystem.attackState = v; }
+  public get attackTimer(): number { return this.combatSystem.attackTimer; }
+  public set attackTimer(v: number) { this.combatSystem.attackTimer = v; }
+  public get attackCallbacks(): KillerAttackCallbacks { return this.combatSystem.attackCallbacks; }
+  public set attackCallbacks(v: KillerAttackCallbacks) { this.combatSystem.attackCallbacks = v; }
+  public get targetSurvivor(): Player | undefined { return this.combatSystem.targetSurvivor; }
+  public set targetSurvivor(v: Player | undefined) { this.combatSystem.targetSurvivor = v; }
 
+  public performAttack(targetPlayer?: Player): boolean { return this.combatSystem.performAttack(targetPlayer, this.settings); }
+  public updateAttack(delta: number, player?: Player, settings?: DebugSettings): void { this.combatSystem.updateAttack(delta, player, settings || this.settings); }
+  public onAttackHit(survivor?: Player): void { this.combatSystem.onAttackHit(survivor); }
+  public onAttackMiss(): void { this.combatSystem.onAttackMiss(); }
+  public checkSlashHit(player: Player, settings?: DebugSettings): boolean { return this.combatSystem.checkSlashHit(player, settings || this.settings); }
+
+  public flashCamera(duration = 260, red = 220, green = 20, blue = 20): void {
+    if (this.scene?.cameras?.main) this.scene.cameras.main.flash(duration, red, green, blue);
+  }
+
+  public updateHitbox(hitboxRadius: number, playerScale: number): void {
+    this.sprite.setScale(playerScale * 1.28);
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     if (body) {
-      body.setCircle(radius, offsetX, offsetY);
-      body.setImmovable(true);
-      body.pushable = false;
-      body.mass = 100000;
+      body.setCircle(hitboxRadius, this.sprite.frame.width * 0.5 - hitboxRadius, this.sprite.frame.height * 0.5 - hitboxRadius);
+      body.setImmovable(true); body.pushable = false; body.mass = 100000;
     }
   }
 
-  /**
-   * Atualização principal delegada ao controlador ativo e ciclo de ataque.
-   */
   public update(delta: number, player: Player, generators: Generator[], settings: DebugSettings): void {
     this.settings = settings;
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
     if (body && Math.hypot(body.velocity.x, body.velocity.y) < 0.1) {
-      this.lastStableX = this.sprite.x;
-      this.lastStableY = this.sprite.y;
+      this.lastStableX = this.sprite.x; this.lastStableY = this.sprite.y;
     }
-
-    if (this.isAttacking) {
-      this.updateAttack(delta, player, settings);
-    }
-
-    if (this.controller) {
-      this.controller.update(delta, player, generators, settings);
-    }
+    if (this.isAttacking) this.updateAttack(delta, player, settings);
+    if (this.controller) this.controller.update(delta, player, generators, settings);
   }
 
-  /**
-   * Encaminha sinal de ruído ao controlador.
-   */
-  public alertToNoise(
-    x: number,
-    y: number,
-    targetGen?: Generator | { name: string; x: number; y: number; rotation?: number }
-  ): void {
-    if (this.controller) {
-      this.controller.alertToNoise(x, y, targetGen);
-    }
+  public alertToNoise(x: number, y: number, targetGen?: Generator | { name: string; x: number; y: number; rotation?: number }): void {
+    if (this.controller) this.controller.alertToNoise(x, y, targetGen);
   }
 
-  /**
-   * Indica se o Killer está atualmente em deslocamento ativo com velocidade física.
-   */
   public get isMoving(): boolean {
     const body = this.sprite?.body as Phaser.Physics.Arcade.Body | undefined;
     return body ? Math.hypot(body.velocity.x, body.velocity.y) > 10 : false;
   }
 
-  // ==========================================
-  // ATUADORES FÍSICOS (Comandos de Controle)
-  // ==========================================
-
-  public setVelocity(vx: number, vy: number): void {
-    this.sprite.setVelocity(vx, vy);
-  }
-
-  public stopMovement(): void {
-    this.sprite.setVelocity(0, 0);
-  }
+  public setVelocity(vx: number, vy: number): void { this.sprite.setVelocity(vx, vy); }
+  public stopMovement(): void { this.sprite.setVelocity(0, 0); }
 
   public rotateTowards(targetAngle: number, delta: number, turnSpeed: number): void {
     let currentAngle = this.sprite.rotation;
     if (typeof currentAngle !== 'number' || isNaN(currentAngle) || !isFinite(currentAngle)) {
-      currentAngle = targetAngle;
-      this.sprite.rotation = targetAngle;
+      currentAngle = targetAngle; this.sprite.rotation = targetAngle;
     }
     currentAngle = Phaser.Math.Angle.Wrap(currentAngle);
-
     const diff = Phaser.Math.Angle.Wrap(targetAngle - currentAngle);
-    const deltaSec = Math.min(delta / 1000, 0.1);
-    const maxStep = turnSpeed * deltaSec;
-
-    if (Math.abs(diff) <= maxStep) {
-      this.sprite.rotation = targetAngle;
-    } else {
-      this.sprite.rotation = Phaser.Math.Angle.Wrap(currentAngle + Math.sign(diff) * maxStep);
-    }
+    const maxStep = turnSpeed * Math.min(delta / 1000, 0.1);
+    this.sprite.rotation = Math.abs(diff) <= maxStep ? targetAngle : Phaser.Math.Angle.Wrap(currentAngle + Math.sign(diff) * maxStep);
   }
 
   public playAnimation(key: string): void {
-    if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== key) {
-      this.sprite.anims.play(key, true);
-    }
+    if (!this.sprite.anims.isPlaying || this.sprite.anims.currentAnim?.key !== key) this.sprite.anims.play(key, true);
   }
 
   public stopAnimation(frame?: number): void {
-    if (this.sprite.anims.isPlaying) {
-      this.sprite.anims.stop();
-    }
-    if (typeof frame === 'number') {
-      this.sprite.setFrame(frame);
-    }
+    if (this.sprite.anims.isPlaying) this.sprite.anims.stop();
+    if (typeof frame === 'number') this.sprite.setFrame(frame);
   }
 
-  public isWalkableTile(x: number, y: number, margin: number = 4): boolean {
-    const points = [
-      { x, y },
-      { x: x - margin, y },
-      { x: x + margin, y },
-      { x, y: y - margin },
-      { x, y: y + margin }
-    ];
-    for (const pt of points) {
-      const col = Math.floor(pt.x / TILE_SIZE);
-      const row = Math.floor(pt.y / TILE_SIZE);
-      if (row < 0 || row >= ROWS || col < 0 || col >= COLS || this.navGrid[row]?.[col] !== 0) {
-        return false;
-      }
+  public isWalkableTile(x: number, y: number, margin = 4): boolean {
+    const pts = [{ x, y }, { x: x - margin, y }, { x: x + margin, y }, { x, y: y - margin }, { x, y: y + margin }];
+    for (const pt of pts) {
+      const col = Math.floor(pt.x / TILE_SIZE), row = Math.floor(pt.y / TILE_SIZE);
+      if (row < 0 || row >= ROWS || col < 0 || col >= COLS || this.navGrid[row]?.[col] !== 0) return false;
     }
     return true;
   }
 
-  // ==========================================
-  // SISTEMA DE ATAQUE M1 (LUNGE & BLADE WIPE)
-  // ==========================================
-
-  /**
-   * Dispara a ação de ataque M1 básico (Lunge Dash).
-   * @param targetPlayer Jogador alvo opcional
-   * @returns boolean se o ataque foi iniciado com sucesso
-   */
-  public performAttack(targetPlayer?: Player): boolean {
-    if (this.isAttacking) return false;
-
-    this.isAttacking = true;
-    this.attackState = 'LUNGE';
-    this.attackTimer = 250; // 250ms de lunge dash
-    if (targetPlayer) {
-      this.targetSurvivor = targetPlayer;
-    }
-
-    // Áudio de lâmina cortando o ar
-    AudioManager.getInstance().playAttackSwingSound();
-
-    // Notifica callback customizado desacoplado
-    this.attackCallbacks.onAttackStart?.();
-
-    // Impulso direcional frontal (Lunge Dash de ~1.5 a 2.0 metros)
-    const headingAngle = this.sprite.rotation + Math.PI / 2;
-    const dirX = Math.cos(headingAngle);
-    const dirY = Math.sin(headingAngle);
-    const lungeSpeed = metersToPixels((this.settings?.killerSpeed ?? 4.6) * 1.5);
-    this.sprite.setVelocity(dirX * lungeSpeed, dirY * lungeSpeed);
-
-    // Verificação de acerto imediato
-    if (targetPlayer && this.checkSlashHit(targetPlayer, this.settings)) {
-      this.onAttackHit(targetPlayer);
-    }
-
-    return true;
-  }
-
-  /**
-   * Atualização frame-a-frame do ciclo de ataque e recuperação.
-   */
-  public updateAttack(delta: number, player?: Player, settings?: DebugSettings): void {
-    const currentSettings = settings || this.settings;
-
-    if (this.attackState === 'LUNGE') {
-      this.attackTimer -= delta;
-
-      // Mantém velocidade de dash frontal
-      const headingAngle = this.sprite.rotation + Math.PI / 2;
-      const dirX = Math.cos(headingAngle);
-      const dirY = Math.sin(headingAngle);
-      const lungeSpeed = metersToPixels((currentSettings?.killerSpeed ?? 4.6) * 1.5);
-      this.sprite.setVelocity(dirX * lungeSpeed, dirY * lungeSpeed);
-
-      const target = player || this.targetSurvivor;
-      if (target && target.isActive !== false && target.sprite?.visible) {
-        // Leve assistência de mira angular durante o dash
-        const dx = target.x - this.sprite.x;
-        const dy = target.y - this.sprite.y;
-        const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
-        this.rotateTowards(targetAngle, delta, 8);
-
-        // Testa corte em arco
-        if (this.checkSlashHit(target, currentSettings)) {
-          this.onAttackHit(target);
-          return;
-        }
-      }
-
-      if (this.attackTimer <= 0) {
-        this.onAttackMiss();
-        return;
-      }
-    } else if (this.attackState === 'SUCCESS_RECOVERY') {
-      this.attackTimer -= delta;
-
-      // Desaceleração severa (~30% da velocidade nominal por 2.7s - Blade Wipe)
-      const baseSpeed = metersToPixels(currentSettings?.killerSpeed ?? 4.6);
-      const recoverySpeed = baseSpeed * 0.30;
-      const headingAngle = this.sprite.rotation + Math.PI / 2;
-      this.sprite.setVelocity(Math.cos(headingAngle) * recoverySpeed, Math.sin(headingAngle) * recoverySpeed);
-
-      if (this.attackTimer <= 0) {
-        this.attackState = 'IDLE';
-        this.isAttacking = false;
-        this.attackCallbacks.onRecoveryEnd?.();
-      }
-    } else if (this.attackState === 'MISS_RECOVERY') {
-      this.attackTimer -= delta;
-
-      // Desaceleração moderada (~60% da velocidade nominal por 1.5s - Recuperação de Golpe no Ar)
-      const baseSpeed = metersToPixels(currentSettings?.killerSpeed ?? 4.6);
-      const recoverySpeed = baseSpeed * 0.60;
-      const headingAngle = this.sprite.rotation + Math.PI / 2;
-      this.sprite.setVelocity(Math.cos(headingAngle) * recoverySpeed, Math.sin(headingAngle) * recoverySpeed);
-
-      if (this.attackTimer <= 0) {
-        this.attackState = 'IDLE';
-        this.isAttacking = false;
-        this.attackCallbacks.onRecoveryEnd?.();
-      }
-    }
-  }
-
-  /**
-   * Conclui ataque com sucesso ao atingir o Survivor (inicia Blade Wipe de 2.7s).
-   */
-  public onAttackHit(survivor?: Player): void {
-    if (!this.isAttacking) {
-      this.isAttacking = true;
-    }
-    this.attackState = 'SUCCESS_RECOVERY';
-    this.attackTimer = 2700; // 2.7s cooldown
-
-    // Som carnoso e seco de impacto de golpe
-    AudioManager.getInstance().playAttackHitSound();
-
-    // Aplica dano / estado de ferido ao Survivor
-    survivor?.takeDamage();
-
-    // Callback desacoplado para cenas e HUD
-    if (survivor) {
-      this.attackCallbacks.onAttackHit?.(survivor);
-    }
-
-    // Feedback visual de impacto
-    if (this.scene?.cameras?.main) {
-      this.scene.cameras.main.flash(260, 220, 20, 20);
-    }
-  }
-
-  /**
-   * Conclui ataque sem contato (inicia recuperação de erro de 1.5s).
-   */
-  public onAttackMiss(): void {
-    if (!this.isAttacking) {
-      this.isAttacking = true;
-    }
-    this.attackState = 'MISS_RECOVERY';
-    this.attackTimer = 1500; // 1.5s cooldown
-
-    this.attackCallbacks.onAttackMiss?.();
-  }
-
-  /**
-   * Avalia se o Survivor está dentro do alcance e arco frontal de corte do Killer.
-   */
-  public checkSlashHit(player: Player, settings?: DebugSettings): boolean {
-    if (!player || !player.sprite || player.isActive === false || !player.sprite.visible) {
-      return false;
-    }
-    const currentSettings = settings || this.settings;
-    const playerRadius = (currentSettings?.hitboxRadius ?? 65) * (currentSettings?.playerScale ?? 0.25);
-    const killerRadius = playerRadius * 1.28;
-    return checkAttackHit(
-      { x: this.sprite.x, y: this.sprite.y },
-      this.sprite.rotation,
-      { x: player.x, y: player.y },
-      playerRadius,
-      killerRadius,
-      1.9
-    );
-  }
-
-  /**
-   * Tratamento de colisão física sólida não-elástica com o Player (Anti-Tunelamento e Bloqueio Corporal Rígido).
-   */
   public handlePlayerCollision(player: Player, settings: DebugSettings, onAttack?: () => void): void {
     if (!this.sprite || !player.sprite || !this.sprite.body || !player.sprite.body) return;
-
-    if (this.isAttacking && this.attackState === 'LUNGE') {
-      this.onAttackHit(player);
-    }
+    if (this.isAttacking && this.attackState === 'LUNGE') this.onAttackHit(player);
 
     const now = this.scene.time.now;
     if (now - this.lastAttackTime >= 1400) {
       this.lastAttackTime = now;
-      this.scene.cameras.main.flash(260, 220, 20, 20);
+      this.flashCamera(260, 220, 20, 20);
       onAttack?.();
     }
 
     const playerBody = player.sprite.body as Phaser.Physics.Arcade.Body;
     const killerBody = this.sprite.body as Phaser.Physics.Arcade.Body;
-
-    // Proteção estrita de imovabilidade: se o Killer estiver em repouso perante seu próprio comando,
-    // restaura sua posição estável sem sofrer nenhum deslocamento vetorial transmitido pelo Survivor
     if (Math.hypot(killerBody.velocity.x, killerBody.velocity.y) < 0.1) {
       this.sprite.setPosition(this.lastStableX, this.lastStableY);
       killerBody.updateCenter();
     }
 
-    const playerRadius = settings.hitboxRadius * settings.playerScale;
-    const killerRadius = playerRadius * 1.28;
-
-    const resolution = resolveSolidBodyCollision(
-      {
-        x: this.sprite.x,
-        y: this.sprite.y,
-        radius: killerRadius,
-        vx: killerBody.velocity.x,
-        vy: killerBody.velocity.y
-      },
-      {
-        x: player.sprite.x,
-        y: player.sprite.y,
-        radius: playerRadius,
-        vx: playerBody.velocity.x,
-        vy: playerBody.velocity.y
-      },
+    const pRadius = settings.hitboxRadius * settings.playerScale;
+    const res = resolveSolidBodyCollision(
+      { x: this.sprite.x, y: this.sprite.y, radius: pRadius * 1.28, vx: killerBody.velocity.x, vy: killerBody.velocity.y },
+      { x: player.sprite.x, y: player.sprite.y, radius: pRadius, vx: playerBody.velocity.x, vy: playerBody.velocity.y },
       (wx, wy) => this.isWalkableTile(wx, wy)
     );
 
-    if (resolution.hasCollision) {
-      this.sprite.setPosition(resolution.killerPos.x, resolution.killerPos.y);
-      player.sprite.setPosition(resolution.playerPos.x, resolution.playerPos.y);
-
+    if (res.hasCollision) {
+      this.sprite.setPosition(res.killerPos.x, res.killerPos.y);
+      player.sprite.setPosition(res.playerPos.x, res.playerPos.y);
       this.enforceWallBounds(this.navGrid);
       player.enforceWallBounds(this.navGrid);
-
-      killerBody.setVelocity(resolution.killerVel.x, resolution.killerVel.y);
-      playerBody.setVelocity(resolution.playerVel.x, resolution.playerVel.y);
-
-      killerBody.updateCenter();
-      playerBody.updateCenter();
+      killerBody.setVelocity(res.killerVel.x, res.killerVel.y);
+      playerBody.setVelocity(res.playerVel.x, res.playerVel.y);
+      killerBody.updateCenter(); playerBody.updateCenter();
     }
   }
 
-  /**
-   * Guarda pós-física anti-tunelamento para o Killer: se penetrar em uma célula sólida,
-   * restaura instantaneamente para a última posição segura conhecida.
-   * @param {number[][]} navGrid - Matriz de navegação 0 (livre) e 1 (parede).
-   */
   public enforceWallBounds(navGrid: number[][]): void {
-    if (!this.sprite || !this.sprite.body || navGrid.length === 0) return;
-
-    const playerRadius = (this.settings?.hitboxRadius ?? 53) * (this.settings?.playerScale ?? 1.25);
-    const killerRadius = playerRadius * 1.28;
-    const clampResult = clampCircleAgainstNavGrid(this.sprite.x, this.sprite.y, killerRadius, navGrid);
-
-    if (clampResult.clamped) {
-      this.sprite.setPosition(clampResult.x, clampResult.y);
+    if (!this.sprite?.body || navGrid.length === 0) return;
+    const pRadius = (this.settings?.hitboxRadius ?? 53) * (this.settings?.playerScale ?? 1.25);
+    const clampRes = clampCircleAgainstNavGrid(this.sprite.x, this.sprite.y, pRadius * 1.28, navGrid);
+    if (clampRes.clamped) {
+      this.sprite.setPosition(clampRes.x, clampRes.y);
       (this.sprite.body as Phaser.Physics.Arcade.Body).updateCenter();
     }
-    this.lastSafeX = this.sprite.x;
-    this.lastSafeY = this.sprite.y;
+    this.lastSafeX = this.sprite.x; this.lastSafeY = this.sprite.y;
   }
 
-  /**
-   * Atualiza dinamicamente a malha navGrid ativa do Killer (com geradores e paredes)
-   * e recalcula a malha ponderada de IA para contorno de quinas.
-   */
   public updateNavGrid(navGrid: number[][], weightedGrid?: number[][]): void {
     this.navGrid = navGrid;
     this.weightedGrid = weightedGrid || buildAiWeightedGrid(navGrid);
   }
 
-  /**
-   * Retorna a malha de navegação (navGrid) ativa do Killer.
-   */
-  public getNavGrid(): number[][] {
-    return this.navGrid;
+  public getNavGrid(): number[][] { return this.navGrid; }
+  public getWeightedGrid(): number[][] { return this.weightedGrid; }
+  public postUpdate(_delta: number, navGrid: number[][]): void { this.enforceWallBounds(navGrid); }
+
+  private getAllSolids(): Phaser.GameObjects.Rectangle[] {
+    return (this.walls.getChildren() as Phaser.GameObjects.Rectangle[]).concat(this.obstacles.getChildren() as Phaser.GameObjects.Rectangle[]);
   }
 
-  /**
-   * Retorna a malha ponderada (weightedGrid) ativa do Killer.
-   */
-  public getWeightedGrid(): number[][] {
-    return this.weightedGrid;
+  public hasLineOfSight(x1: number, y1: number, x2: number, y2: number, clearance = 18): boolean {
+    if (checkRaysIntersectSolids(x1, y1, x2, y2, clearance, this.getAllSolids())) return false;
+    return !this.navGrid || this.navGrid.length === 0 || isRayClearOnNavGrid(x1, y1, x2, y2, this.navGrid, clearance, TILE_SIZE);
   }
 
-  /**
-   * Pós-processamento físico do Killer no POST_UPDATE.
-   */
-  public postUpdate(_delta: number, navGrid: number[][]): void {
-    this.enforceWallBounds(navGrid);
+  public hasClearanceLineOfSight(x1: number, y1: number, x2: number, y2: number, clearanceRadius = 45): boolean {
+    if (checkRaysIntersectSolids(x1, y1, x2, y2, clearanceRadius, this.getAllSolids())) return false;
+    return !this.navGrid || this.navGrid.length === 0 || hasClearanceLineOfSight(x1, y1, x2, y2, this.navGrid, clearanceRadius, TILE_SIZE, this.weightedGrid);
   }
 
-  /**
-   * Verifica linha de visão desobstruída (Line of Sight - LOS) considerando corpos sólidos e navGrid.
-   */
-  public hasLineOfSight(x1: number, y1: number, x2: number, y2: number, clearance: number = 18): boolean {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 2) return true;
-
-    const pX = -dy / dist;
-    const pY = dx / dist;
-
-    const rays = [
-      new Phaser.Geom.Line(x1, y1, x2, y2),
-      new Phaser.Geom.Line(x1 + pX * clearance, y1 + pY * clearance, x2 + pX * clearance, y2 + pY * clearance),
-      new Phaser.Geom.Line(x1 - pX * clearance, y1 - pY * clearance, x2 - pX * clearance, y2 - pY * clearance)
-    ];
-
-    const wallBodies = this.walls.getChildren() as Phaser.GameObjects.Rectangle[];
-    const obstacleBodies = this.obstacles.getChildren() as Phaser.GameObjects.Rectangle[];
-    const allSolids = wallBodies.concat(obstacleBodies);
-
-    for (const solid of allSolids) {
-      const b = solid.body as Phaser.Physics.Arcade.StaticBody;
-      if (!b) continue;
-
-      const rect = new Phaser.Geom.Rectangle(b.x, b.y, b.width, b.height);
-      for (const ray of rays) {
-        if (Phaser.Geom.Intersects.LineToRectangle(ray, rect)) {
-          return false;
-        }
-      }
-    }
-
-    if (this.navGrid && this.navGrid.length > 0) {
-      if (!isRayClearOnNavGrid(x1, y1, x2, y2, this.navGrid, clearance, TILE_SIZE)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  /**
-   * Thick Raycast / Capsule Cast para navegação física e String Pulling:
-   * Testa passagem desobstruída com margem de folga física do corpo (clearanceRadius = 45px)
-   * contra a geometria física do cenário (paredes, obstáculos e malha navGrid/weightedGrid).
-   */
-  public hasClearanceLineOfSight(
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-    clearanceRadius: number = 45
-  ): boolean {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const dist = Math.hypot(dx, dy);
-    if (dist >= 2) {
-      const pX = -dy / dist;
-      const pY = dx / dist;
-
-      const rays = [
-        new Phaser.Geom.Line(x1, y1, x2, y2),
-        new Phaser.Geom.Line(x1 + pX * clearanceRadius, y1 + pY * clearanceRadius, x2 + pX * clearanceRadius, y2 + pY * clearanceRadius),
-        new Phaser.Geom.Line(x1 - pX * clearanceRadius, y1 - pY * clearanceRadius, x2 - pX * clearanceRadius, y2 - pY * clearanceRadius)
-      ];
-
-      const wallBodies = this.walls.getChildren() as Phaser.GameObjects.Rectangle[];
-      const obstacleBodies = this.obstacles.getChildren() as Phaser.GameObjects.Rectangle[];
-      const allSolids = wallBodies.concat(obstacleBodies);
-
-      for (const solid of allSolids) {
-        const b = solid.body as Phaser.Physics.Arcade.StaticBody;
-        if (!b) continue;
-
-        const rect = new Phaser.Geom.Rectangle(b.x, b.y, b.width, b.height);
-        for (const ray of rays) {
-          if (Phaser.Geom.Intersects.LineToRectangle(ray, rect)) {
-            return false;
-          }
-        }
-      }
-    }
-
-    if (this.navGrid && this.navGrid.length > 0) {
-      if (!hasClearanceLineOfSight(x1, y1, x2, y2, this.navGrid, clearanceRadius, TILE_SIZE, this.weightedGrid)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  /**
-   * Executa o cálculo de caminho A* usando EasyStar.js com suavização e ancoragem no destino exato.
-   */
-  public calculatePath(
-    fromX: number,
-    fromY: number,
-    toX: number,
-    toY: number,
-    onPathFound: (path: Array<{ x: number; y: number }>) => void
-  ): void {
-    const startCol = Phaser.Math.Clamp(Math.floor(fromX / TILE_SIZE), 0, COLS - 1);
-    const startRow = Phaser.Math.Clamp(Math.floor(fromY / TILE_SIZE), 0, ROWS - 1);
-    const endCol = Phaser.Math.Clamp(Math.floor(toX / TILE_SIZE), 0, COLS - 1);
-    const endRow = Phaser.Math.Clamp(Math.floor(toY / TILE_SIZE), 0, ROWS - 1);
-
-    const safeStart = this.getNearestWalkableTile(startCol, startRow);
-    const safeEnd = this.getNearestWalkableTile(endCol, endRow);
+  public calculatePath(fromX: number, fromY: number, toX: number, toY: number, onPathFound: (path: Array<{ x: number; y: number }>) => void): void {
+    const sCol = Phaser.Math.Clamp(Math.floor(fromX / TILE_SIZE), 0, COLS - 1), sRow = Phaser.Math.Clamp(Math.floor(fromY / TILE_SIZE), 0, ROWS - 1);
+    const eCol = Phaser.Math.Clamp(Math.floor(toX / TILE_SIZE), 0, COLS - 1), eRow = Phaser.Math.Clamp(Math.floor(toY / TILE_SIZE), 0, ROWS - 1);
+    const safeStart = this.getNearestWalkableTile(sCol, sRow), safeEnd = this.getNearestWalkableTile(eCol, eRow);
     if (!safeStart || !safeEnd) return;
 
     this.easystar.findPath(safeStart.x, safeStart.y, safeEnd.x, safeEnd.y, (path) => {
       if (path && path.length > 0) {
-        const mapped = path.map((p) => ({
-          x: p.x * TILE_SIZE + TILE_SIZE / 2,
-          y: p.y * TILE_SIZE + TILE_SIZE / 2
-        }));
-
-        // Suavização da rota eliminando degraus e preservando quinas com Thick Raycast (45px)
-        const smoothed = smoothPathNodes(
-          mapped,
-          { x: toX, y: toY },
-          (x1, y1, x2, y2) => this.hasClearanceLineOfSight(x1, y1, x2, y2, 45),
-          this.weightedGrid,
-          TILE_SIZE
-        );
-
+        const mapped = path.map((p) => ({ x: p.x * TILE_SIZE + TILE_SIZE / 2, y: p.y * TILE_SIZE + TILE_SIZE / 2 }));
+        const smoothed = smoothPathNodes(mapped, { x: toX, y: toY }, (x1, y1, x2, y2) => this.hasClearanceLineOfSight(x1, y1, x2, y2, 45), this.weightedGrid, TILE_SIZE);
         onPathFound(smoothed);
       }
     });
@@ -671,174 +263,28 @@ export class Killer implements IKillerPawn {
   }
 
   private getNearestWalkableTile(col: number, row: number): { x: number; y: number } | null {
-    if (this.navGrid[row]?.[col] === 0) {
-      return { x: col, y: row };
-    }
+    if (this.navGrid[row]?.[col] === 0) return { x: col, y: row };
     for (let r = 1; r <= 3; r++) {
       for (let dy = -r; dy <= r; dy++) {
         for (let dx = -r; dx <= r; dx++) {
-          const c = col + dx;
-          const rw = row + dy;
-          if (rw >= 0 && rw < ROWS && c >= 0 && c < COLS && this.navGrid[rw]?.[c] === 0) {
-            return { x: c, y: rw };
-          }
+          const c = col + dx, rw = row + dy;
+          if (rw >= 0 && rw < ROWS && c >= 0 && c < COLS && this.navGrid[rw]?.[c] === 0) return { x: c, y: rw };
         }
       }
     }
     return null;
   }
 
-  // ==========================================
-  // RENDERIZAÇÃO DE DEPURAÇÃO
-  // ==========================================
-
-  public renderVisionGraphic(settings: DebugSettings, targetPos: { x: number; y: number }, isChase: boolean): void {
-    if (!this.visionGraphic) return;
-    this.visionGraphic.clear();
-
-    if (!settings.showKillerVision || !settings.killerAiEnabled) return;
-
-    const kx = this.sprite.x;
-    const ky = this.sprite.y;
-    const detectionRadius = metersToPixels(settings.detectionRadius);
-    const loseRadius = detectionRadius * 1.5;
-
-    // Raio de Terror translúcido de 32 metros (1920px) ao redor do Killer (Carmesim)
-    const terrorRadiusPx = metersToPixels(TERROR_RADIUS_METERS);
-    this.visionGraphic.fillStyle(0xdc2626, 0.08);
-    this.visionGraphic.fillCircle(kx, ky, terrorRadiusPx);
-    this.visionGraphic.lineStyle(2.5, 0xdc2626, 0.6);
-    this.visionGraphic.strokeCircle(kx, ky, terrorRadiusPx);
-
-    // Raio de perda de perseguição (Amarelo / Dourado)
-    this.visionGraphic.lineStyle(2.5, 0xf0c674, 0.4);
-    this.visionGraphic.strokeCircle(kx, ky, loseRadius);
-
-    if (isChase) {
-      this.visionGraphic.fillStyle(0xff2222, 0.12);
-      this.visionGraphic.fillCircle(kx, ky, detectionRadius);
-      this.visionGraphic.lineStyle(2.5, 0xff2222, 0.85);
-      this.visionGraphic.strokeCircle(kx, ky, detectionRadius);
-
-      this.visionGraphic.lineStyle(2.5, 0xff2222, 0.7);
-      this.visionGraphic.lineBetween(kx, ky, targetPos.x, targetPos.y);
-    } else {
-      this.visionGraphic.fillStyle(0xff8833, 0.10);
-      this.visionGraphic.fillCircle(kx, ky, detectionRadius);
-      this.visionGraphic.lineStyle(2.5, 0xff8833, 0.65);
-      this.visionGraphic.strokeCircle(kx, ky, detectionRadius);
-
-      this.visionGraphic.lineStyle(2.5, 0x88bbff, 0.45);
-      this.visionGraphic.lineBetween(kx, ky, targetPos.x, targetPos.y);
-    }
+  public renderVisionGraphic(s: DebugSettings, targetPos: { x: number; y: number }, isChase: boolean): void {
+    this.debugRenderer.renderVision({ x: this.sprite.x, y: this.sprite.y }, s, targetPos, isChase);
   }
 
-  public renderRouteGraphic(
-    settings: DebugSettings,
-    path: Array<{ x: number; y: number }>,
-    pathIndex: number,
-    isChase: boolean,
-    hasDirectLOS: boolean,
-    targetPos: { x: number; y: number }
-  ): void {
-    if (!this.aStarGraphic) return;
-    this.aStarGraphic.clear();
-
-    if (!settings.showAStarPath || !settings.killerAiEnabled) return;
-
-    if (isChase) {
-      if (hasDirectLOS) {
-        this.aStarGraphic.lineStyle(3.5, 0xff2222, 0.95);
-        this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, targetPos.x, targetPos.y);
-        this.aStarGraphic.fillStyle(0xff2222, 0.7);
-        this.aStarGraphic.fillCircle(targetPos.x, targetPos.y, 9);
-      } else if (path && path.length > 0) {
-        this.aStarGraphic.lineStyle(3.5, 0xff2222, 0.95);
-
-        const currentNode = path[pathIndex];
-        if (currentNode) {
-          this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, currentNode.x, currentNode.y);
-        }
-
-        for (let i = pathIndex; i < path.length - 1; i++) {
-          const n1 = path[i];
-          const n2 = path[i + 1];
-          this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
-        }
-
-        const lastNode = path[path.length - 1];
-        if (lastNode && (lastNode.x !== targetPos.x || lastNode.y !== targetPos.y)) {
-          this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, targetPos.x, targetPos.y);
-        }
-
-        for (let i = 0; i < path.length; i++) {
-          const node = path[i];
-          if (i === pathIndex) {
-            this.aStarGraphic.fillStyle(0xffffff, 1);
-            this.aStarGraphic.fillCircle(node.x, node.y, 6);
-            this.aStarGraphic.lineStyle(2.5, 0xff2222, 1);
-            this.aStarGraphic.strokeCircle(node.x, node.y, 10);
-          } else if (i > pathIndex) {
-            this.aStarGraphic.fillStyle(0xff3333, 0.85);
-            this.aStarGraphic.fillCircle(node.x, node.y, 5);
-            this.aStarGraphic.lineStyle(1.5, 0xff6666, 0.6);
-            this.aStarGraphic.strokeCircle(node.x, node.y, 7);
-          }
-        }
-      }
-    } else if (path && path.length > 0) {
-      this.aStarGraphic.lineStyle(3, 0xff3333, 0.9);
-      const currentNode = path[pathIndex];
-      if (currentNode) {
-        this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, currentNode.x, currentNode.y);
-      }
-      for (let i = pathIndex; i < path.length - 1; i++) {
-        const n1 = path[i];
-        const n2 = path[i + 1];
-        this.aStarGraphic.lineBetween(n1.x, n1.y, n2.x, n2.y);
-      }
-      const lastNode = path[path.length - 1];
-      if (lastNode && (lastNode.x !== targetPos.x || lastNode.y !== targetPos.y)) {
-        this.aStarGraphic.lineBetween(lastNode.x, lastNode.y, targetPos.x, targetPos.y);
-      }
-
-      for (let i = pathIndex; i < path.length; i++) {
-        const node = path[i];
-        if (node.x !== targetPos.x || node.y !== targetPos.y) {
-          this.aStarGraphic.fillStyle(0xffffff, 0.85);
-          this.aStarGraphic.fillCircle(node.x, node.y, 4);
-        }
-      }
-
-      this.aStarGraphic.fillStyle(0xff2222, 0.9);
-      this.aStarGraphic.fillCircle(targetPos.x, targetPos.y, 7);
-      this.aStarGraphic.lineStyle(2, 0xffffff, 0.95);
-      this.aStarGraphic.strokeCircle(targetPos.x, targetPos.y, 11);
-    } else {
-      this.aStarGraphic.lineStyle(2.5, 0xff3333, 0.8);
-      this.aStarGraphic.lineBetween(this.sprite.x, this.sprite.y, targetPos.x, targetPos.y);
-      this.aStarGraphic.fillStyle(0xff2222, 0.85);
-      this.aStarGraphic.fillCircle(targetPos.x, targetPos.y, 7);
-      this.aStarGraphic.lineStyle(2, 0xffffff, 0.95);
-      this.aStarGraphic.strokeCircle(targetPos.x, targetPos.y, 11);
-    }
+  public renderRouteGraphic(s: DebugSettings, path: Array<{ x: number; y: number }>, idx: number, isChase: boolean, directLOS: boolean, targetPos: { x: number; y: number }): void {
+    this.debugRenderer.renderRoute({ x: this.sprite.x, y: this.sprite.y }, s, path, idx, isChase, directLOS, targetPos);
   }
 
-  public destroy(): void {
-    this.visionGraphic.destroy();
-    this.aStarGraphic.destroy();
-    this.sprite.destroy();
-  }
-
-  get x(): number {
-    return this.sprite.x;
-  }
-
-  get y(): number {
-    return this.sprite.y;
-  }
-
-  get rotation(): number {
-    return this.sprite.rotation;
-  }
+  public destroy(): void { this.debugRenderer.destroy(); this.sprite.destroy(); }
+  get x(): number { return this.sprite.x; }
+  get y(): number { return this.sprite.y; }
+  get rotation(): number { return this.sprite.rotation; }
 }
