@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import survivorMeta from '../assets/survivor.json';
 import generatorMeta from '../assets/generator.json';
-import { WORLD_WIDTH, WORLD_HEIGHT, TILE_SIZE, TERROR_RADIUS_MAX } from '../config/constants';
+import { WORLD_WIDTH, WORLD_HEIGHT } from '../config/constants';
 import { MapBuilder, MapData } from '../map/MapBuilder';
 import { Player } from '../entities/Player';
 import { Killer } from '../entities/Killer';
@@ -13,226 +13,129 @@ import { AudioManager } from '../audio/AudioManager';
 import { TelemetryHUD } from '../ui/TelemetryHUD';
 import { RepairPromptUI } from '../ui/RepairPromptUI';
 import { DebugPanel } from '../ui/DebugPanel';
-import {
-  calculateEdgeToEdgeDistance,
-  pixelsToMeters,
-  metersToPixels,
-  formatCurrentTile,
-  evaluateCameraPanState,
-  getMappedCandidatePool,
-  selectRandomCandidates,
-  candidateToGeneratorDef,
-  updateNavGridWithGenerators,
-  buildAiWeightedGrid,
-  GeneratorSpawnCandidate,
-  ActiveGeneratorData,
-  saveActiveGeneratorsToStorage,
-  loadActiveGeneratorsFromStorage,
-  clearActiveGeneratorsFromStorage
-} from '../utils/gameLogic';
 import { GeneratorPlacer } from '../editor/GeneratorPlacer';
-
-
+import { CameraController } from '../controllers/CameraController';
+import { AcousticWaveVisualizer } from '../services/AcousticWaveVisualizer';
+import { GeneratorLifecycleManager } from '../services/GeneratorLifecycleManager';
+import { calculateEdgeToEdgeDistance, pixelsToMeters, formatCurrentTile, GeneratorSpawnCandidate, ActiveGeneratorData } from '../utils/gameLogic';
 
 /**
  * @class SandboxScene
- * @description Orchestrator scene connecting environment, Player, Killer AI,
- * DBD generators, Skill Check QTE, telemetry HUD, and debug controls with zero regressions.
+ * @description Lean orchestrator scene coordinating gameplay entities, systems, and UI services.
  */
 export class SandboxScene extends Phaser.Scene {
   private mapData!: MapData;
   private easystar!: EasyStar.js;
   private player!: Player;
   private killer!: Killer;
-  private generators: Generator[] = [];
+  private cameraCtrl!: CameraController;
+  private waveVisualizer!: AcousticWaveVisualizer;
+  private generatorLifecycle!: GeneratorLifecycleManager;
+
   private activeNearbyGen: Generator | null = null;
   private isRepairing = false;
   private repairStaggerTimer = 0;
   private isMatchWon = false;
-  private survivorFootstepTimer = 0;
-  private killerFootstepTimer = 0;
 
-  // Systems and UI
   private skillCheck!: SkillCheckSystem;
   private repairPrompt!: RepairPromptUI;
   private telemetryHud!: TelemetryHUD;
   public debugPanel!: DebugPanel;
   private generatorPlacer!: GeneratorPlacer;
-
-  public get hud(): TelemetryHUD {
-    return this.telemetryHud;
-  }
-
-  public get isSpectatorMode(): boolean {
-    return !this.player.isActive || !this.debugPanel.settings.survivorActive;
-  }
-
-  // Inputs & Pan Navigation
   private keyE!: Phaser.Input.Keyboard.Key;
   private keySpace!: Phaser.Input.Keyboard.Key;
   private activeKeys: Set<string> = new Set();
-  private isPanningCamera = false;
 
+  public get hud(): TelemetryHUD { return this.telemetryHud; }
+  public get isSpectatorMode(): boolean { return !this.player.isActive || !this.debugPanel.settings.survivorActive; }
+  public get generators(): Generator[] { return this.generatorLifecycle.generators; }
 
-  constructor() {
-    super('SandboxScene');
-  }
+  constructor() { super('SandboxScene'); }
 
   preload(): void {
-    this.load.spritesheet('survivor', 'assets/survivor.png', {
-      frameWidth: survivorMeta.frameWidth, frameHeight: survivorMeta.frameHeight
-    });
-    this.load.spritesheet('generator', 'assets/generator.png', {
-      frameWidth: generatorMeta.frameWidth, frameHeight: generatorMeta.frameHeight
-    });
+    this.load.spritesheet('survivor', 'assets/survivor.png', { frameWidth: survivorMeta.frameWidth, frameHeight: survivorMeta.frameHeight });
+    this.load.spritesheet('generator', 'assets/generator.png', { frameWidth: generatorMeta.frameWidth, frameHeight: generatorMeta.frameHeight });
   }
 
   create(): void {
-    // 1. Map & EasyStar A*
     this.mapData = MapBuilder.build(this);
     this.easystar = this.mapData.easystar;
 
-    // 2. Debug Panel
     this.debugPanel = new DebugPanel({
       onPlayerScaleOrHitboxChanged: (s, r) => { this.player.updateHitbox(r, s); this.killer.updateHitbox(r, s); },
       onAnimFrameRateChanged: (k, fps) => { const a = this.anims.get(k); if (a) a.frameRate = fps; },
-      onPhysicsDebugToggled: (show) => {
-        this.physics.world.drawDebug = show;
-        if (!show && this.physics.world.debugGraphic) this.physics.world.debugGraphic.clear();
+      onPhysicsDebugToggled: (s) => { this.physics.world.drawDebug = s; if (!s && this.physics.world.debugGraphic) this.physics.world.debugGraphic.clear(); },
+      onCameraZoomChanged: (z) => this.cameraCtrl.setZoom(z),
+      onFreeCamToggled: (en) => {
+        this.cameraCtrl.setFreeCam(en, this.player.sprite);
+        this.telemetryHud.showNotification(en ? '📷 Modo Câmara Livre ativo: arraste o mapa com o rato!' : '🎯 Câmara centrada no Survivor!', false);
       },
-      onCameraZoomChanged: (zoom) => {
-        this.cameras.main.setZoom(zoom);
-        this.updateUiZoomScale(zoom);
-      },
-      onFreeCamToggled: (enabled) => {
-        if (enabled) {
-          this.cameras.main.stopFollow();
-          this.telemetryHud.showNotification('📷 Modo Câmara Livre ativo: arraste o mapa com o rato!', false);
-        } else {
-          this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
-          this.telemetryHud.showNotification('🎯 Câmara centrada no Survivor!', false);
-        }
-      },
-      onTogglePlacerMode: (enabled) => {
-        this.generatorPlacer.setActive(enabled);
-      },
-      onTogglePlacerSnap: (snap) => {
-        this.generatorPlacer.snapToGrid = snap;
-        this.telemetryHud.showNotification(`🧲 Snap ao Grid: ${snap ? 'ATIVADO (32px)' : 'DESATIVADO (Livre)'}`, false);
-      },
-      onCyclePlacerRotation: () => {
-        this.generatorPlacer.cycleRotation();
-      },
-      onCopyCandidatesJson: () => {
-        this.generatorPlacer.copyCandidatesJson();
-      },
-      onClearCandidates: () => {
-        this.generatorPlacer.clearCandidates();
-      },
+      onTogglePlacerMode: (en) => this.generatorPlacer.setActive(en),
+      onTogglePlacerSnap: (sn) => { this.generatorPlacer.snapToGrid = sn; this.telemetryHud.showNotification(`🧲 Snap ao Grid: ${sn ? 'ATIVADO (32px)' : 'DESATIVADO (Livre)'}`, false); },
+      onCyclePlacerRotation: () => this.generatorPlacer.cycleRotation(),
+      onCopyCandidatesJson: () => this.generatorPlacer.copyCandidatesJson(),
+      onClearCandidates: () => this.generatorPlacer.clearCandidates(),
       onTestSkillCheck: () => this.skillCheck.startSkillCheck((res) => this.onSkillCheckResult(res)),
       onCompleteAllGenerators: () => {
-        this.generators.forEach((g) => g.complete());
-        this.persistActiveGenerators();
-        const completed = this.generators.length;
-        const required = this.debugPanel.settings.generatorRequiredTarget;
-        if (completed >= required && !this.isMatchWon) {
-          this.isMatchWon = true;
-          SoundFX.playVictory();
-          this.cameras.main.flash(500, 40, 180, 255);
-          this.telemetryHud.showVictoryAlert(completed, required);
-        } else {
-          this.telemetryHud.showNotification('⚡ TODOS OS GERADORES RESTAURADOS (DEBUG)!', false);
-        }
+        this.generatorLifecycle.completeAll();
+        const c = this.generatorLifecycle.completedCount, req = this.debugPanel.settings.generatorRequiredTarget;
+        if (c >= req && !this.isMatchWon) this.triggerVictory(c, req);
+        else this.telemetryHud.showNotification('⚡ TODOS OS GERADORES RESTAURADOS (DEBUG)!', false);
       },
       onResetAllGenerators: () => {
-        this.isMatchWon = false;
-        this.generators.forEach((g) => g.reset());
-        this.persistActiveGenerators();
+        this.isMatchWon = false; this.generatorLifecycle.resetAll();
         this.telemetryHud.showNotification('🔄 Progresso de todos os geradores resetado!', false);
       },
       onShuffleGenerators: () => this.spawnRandomGenerators(),
       onLoadFullPool: () => this.loadFullCandidatePool(),
       onClearAllGenerators: () => this.clearAllGenerators(true, true),
-      onSurvivorActiveToggled: (active: boolean) => {
-        this.player.setActiveState(active);
-        if (!active) {
-          if (this.isRepairing) this.stopRepairing();
-          AudioManager.getInstance().stopTerrorRadius();
-          this.telemetryHud.stopHeartbeatVisual();
-        }
-        this.telemetryHud.showNotification(
-          active ? '👤 Survivor reativado no mapa!' : '👁️ Modo Espectador ativo: Survivor invisível e intangível.',
-          false
-        );
+      onSurvivorActiveToggled: (act) => {
+        this.player.setActiveState(act);
+        if (!act) { if (this.isRepairing) this.stopRepairing(); AudioManager.getInstance().stopTerrorRadius(); this.telemetryHud.stopHeartbeatVisual(); }
+        this.telemetryHud.showNotification(act ? '👤 Survivor reativado no mapa!' : '👁️ Modo Espectador ativo: Survivor invisível e intangível.', false);
       },
-      onGeneratorTargetsChanged: () => {
-        this.updateTelemetry();
-      },
-      onAudioSettingsChanged: (enabled, vol) => {
-        AudioManager.getInstance().setEnabled(enabled);
-        AudioManager.getInstance().setMasterVolume(vol);
-      },
-      onTerrorHeartbeatVisualToggled: (enabled: boolean) => {
-        if (!enabled) {
-          this.telemetryHud.stopHeartbeatVisual();
-        }
-      },
-      onResetDefaults: () => {
-        const s = this.debugPanel.settings;
-        this.player.updateHitbox(s.hitboxRadius, s.playerScale);
-        this.killer.updateHitbox(s.hitboxRadius, s.playerScale);
-        this.player.setActiveState(s.survivorActive);
-        this.cameras.main.setZoom(s.cameraZoom);
-        this.updateUiZoomScale(s.cameraZoom);
-        this.physics.world.drawDebug = s.showPhysicsDebug;
-        if (!s.freeCam) {
-          this.cameras.main.startFollow(this.player.sprite, true, 0.1, 0.1);
-        }
-        this.generatorPlacer.setActive(s.editorMode);
-        this.generatorPlacer.snapToGrid = s.placerSnapToGrid;
-        AudioManager.getInstance().setEnabled(s.audioEnabled);
-        AudioManager.getInstance().setMasterVolume(s.masterVolume);
-        if (!s.terrorHeartbeatVisual) {
-          this.telemetryHud.stopHeartbeatVisual();
-        }
-      }
+      onGeneratorTargetsChanged: () => this.updateTelemetry(),
+      onAudioSettingsChanged: (en, vol) => { AudioManager.getInstance().setEnabled(en); AudioManager.getInstance().setMasterVolume(vol); },
+      onTerrorHeartbeatVisualToggled: (en) => { if (!en) this.telemetryHud.stopHeartbeatVisual(); },
+      onResetDefaults: () => this.handleResetDefaults()
     });
 
-    // 3. Animations
-    [
-      { key: 'walk', start: 0, end: 3, rate: this.debugPanel.settings.walkAnimFrameRate },
-      { key: 'run', start: 4, end: 7, rate: this.debugPanel.settings.runAnimFrameRate }
-    ].forEach(({ key, start, end, rate }) => {
-      this.anims.create({
-        key,
-        frames: this.anims.generateFrameNumbers('survivor', { start, end }),
-        frameRate: rate,
-        repeat: -1
-      });
+    [{ key: 'walk', start: 0, end: 3, rate: this.debugPanel.settings.walkAnimFrameRate },
+     { key: 'run', start: 4, end: 7, rate: this.debugPanel.settings.runAnimFrameRate }].forEach(({ key, start, end, rate }) => {
+      this.anims.create({ key, frames: this.anims.generateFrameNumbers('survivor', { start, end }), frameRate: rate, repeat: -1 });
     });
 
     this.player = new Player(this, 2560, 1920, this.debugPanel.settings);
     this.killer = new Killer(this, 2560, 736, this.debugPanel.settings, this.easystar, this.mapData.navGrid, this.mapData.walls, this.mapData.obstacles);
-    this.killer.attackCallbacks = {
-      onAttackHit: (_survivor) => {
-        this.telemetryHud.showAttackAlert();
-        this.cameras.main.flash(260, 220, 20, 20);
-        this.cameras.main.shake(180, 0.005);
-      }
-    };
-    this.generators = [];
+    this.killer.attackCallbacks = { onAttackHit: () => {
+      this.telemetryHud.showAttackAlert(); this.cameras.main.flash(260, 220, 20, 20); this.cameras.main.shake(180, 0.005);
+    }};
+
     this.skillCheck = new SkillCheckSystem(this);
     this.repairPrompt = new RepairPromptUI(this);
     this.telemetryHud = new TelemetryHUD(this);
     this.generatorPlacer = new GeneratorPlacer({
-      scene: this,
-      navGrid: this.mapData.navGrid,
-      onNotify: (msg, isAlert) => this.telemetryHud.showNotification(msg, isAlert)
+      scene: this, navGrid: this.mapData.navGrid, onNotify: (msg, alert) => this.telemetryHud.showNotification(msg, alert)
     });
     this.generatorPlacer.setActive(this.debugPanel.settings.editorMode);
     this.generatorPlacer.snapToGrid = this.debugPanel.settings.placerSnapToGrid;
 
-    // 5. Physics Colliders & Anti-Tunneling Bounds
+    this.waveVisualizer = new AcousticWaveVisualizer({
+      scene: this, isEnabled: () => Boolean(this.debugPanel?.settings?.showSoundWaves)
+    });
+
+    this.generatorLifecycle = new GeneratorLifecycleManager({
+      scene: this, obstacles: this.mapData.obstacles, getBaseNavGrid: () => this.mapData.baseNavGrid,
+      onNavGridUpdated: (navGrid, weightedGrid) => {
+        this.mapData.navGrid = navGrid; this.easystar.setGrid(weightedGrid); this.killer.updateNavGrid(navGrid, weightedGrid);
+        if (this.generatorPlacer) this.generatorPlacer.navGrid = navGrid;
+      },
+      getZoom: () => this.cameraCtrl?.currentZoom || 1.0, onUiZoomScale: (z) => this.updateUiZoomScale(z),
+      onNotification: (msg, alert) => this.telemetryHud.showNotification(msg, alert),
+      onBeforeClearAll: () => { this.isMatchWon = false; if (this.isRepairing) this.stopRepairing(); this.activeNearbyGen = null; this.repairPrompt.hide(); },
+      onGeneratorsSpawned: () => { this.isMatchWon = false; }
+    });
+
     [this.mapData.walls, this.mapData.obstacles].forEach((group) => {
       this.physics.add.collider(this.player.sprite, group);
       this.physics.add.collider(this.killer.sprite, group);
@@ -244,136 +147,34 @@ export class SandboxScene extends Phaser.Scene {
       this.player.postUpdate(d, this.mapData.navGrid); this.killer.postUpdate(d, this.mapData.navGrid); this.updateTelemetry();
     });
 
-    // 6. Camera & World Bounds
     this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
     this.physics.world.drawDebug = this.debugPanel.settings.showPhysicsDebug;
-    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    if (this.debugPanel.settings.freeCam) {
-      this.cameras.main.stopFollow();
-    } else {
-      this.cameras.main.startFollow(this.player.sprite, true, 0.08, 0.08);
-    }
-    this.cameras.main.setZoom(this.debugPanel.settings.cameraZoom);
-    this.updateUiZoomScale(this.debugPanel.settings.cameraZoom);
 
-    // 6.1 Navegação de Câmara Livre via Drag do Mouse (Pan) e Posicionamento de Spawns
-    const executeCameraPan = (pointer: Phaser.Input.Pointer) => {
-      const zoom = this.cameras.main.zoom || 1.0;
-      const dx = (pointer.x - pointer.prevPosition.x) / zoom;
-      const dy = (pointer.y - pointer.prevPosition.y) / zoom;
-      this.cameras.main.scrollX -= dx;
-      this.cameras.main.scrollY -= dy;
-    };
-
-    const isMiddleButton = (pointer: Phaser.Input.Pointer): boolean => {
-      return Boolean(
-        pointer.middleButtonDown() ||
-        (pointer.buttons & 4) !== 0 ||
-        (pointer.isDown && pointer.button === 1)
-      );
-    };
-
-    const isLeftButton = (pointer: Phaser.Input.Pointer): boolean => {
-      return Boolean(
-        pointer.leftButtonDown() ||
-        (pointer.buttons & 1) !== 0 ||
-        (pointer.isDown && pointer.button === 0)
-      );
-    };
-
-    const isSpaceKeyDown = (): boolean => {
-      return Boolean(this.keySpace?.isDown || this.activeKeys.has('Space'));
-    };
+    this.cameraCtrl = new CameraController({
+      scene: this, worldWidth: WORLD_WIDTH, worldHeight: WORLD_HEIGHT,
+      getFreeCam: () => this.debugPanel.settings.freeCam,
+      setFreeCam: (en) => { this.debugPanel.settings.freeCam = en; this.debugPanel.saveSettingsToStorage(); },
+      getPlacerActive: () => Boolean(this.generatorPlacer?.isActive),
+      isSpaceDown: () => Boolean(this.keySpace?.isDown || this.activeKeys.has('Space')),
+      onPanActivated: () => this.telemetryHud.showNotification('📷 Câmara Livre (Pan) ativada!', false),
+      onZoomChanged: (z) => { this.debugPanel.settings.cameraZoom = z; this.debugPanel.saveSettingsToStorage(); },
+      onUiZoomScale: (z) => this.updateUiZoomScale(z)
+    });
+    this.cameraCtrl.setup(this.player.sprite, this.debugPanel.settings.cameraZoom);
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       AudioManager.getInstance().ensureContextRunning();
-      const isSpace = isSpaceKeyDown();
-      const isMiddle = isMiddleButton(pointer);
-      const isLeft = isLeftButton(pointer);
-
-      const panState = evaluateCameraPanState(
-        isMiddle,
-        isSpace,
-        isLeft,
-        this.debugPanel.settings.freeCam,
-        Boolean(this.generatorPlacer?.isActive)
-      );
-
-      if (panState.shouldPan) {
-        this.isPanningCamera = true;
-        pointer.prevPosition.x = pointer.x;
-        pointer.prevPosition.y = pointer.y;
-        if (!this.debugPanel.settings.freeCam) {
-          this.debugPanel.settings.freeCam = true;
-          this.cameras.main.stopFollow();
-          this.debugPanel.saveSettingsToStorage();
-          this.telemetryHud.showNotification('📷 Câmara Livre (Pan) ativada!', false);
-        }
-        return;
-      }
-
-      // RMB: Remover candidato existente
-      if (pointer.rightButtonDown() && this.generatorPlacer?.isActive) {
-        this.generatorPlacer.handlePointerDown(pointer);
-        return;
-      }
-
-      // LMB: Posicionar gerador apenas se panState.canPlaceGenerator for verdadeiro
-      if (panState.canPlaceGenerator && this.generatorPlacer?.isActive) {
-        this.generatorPlacer.handlePointerDown(pointer);
-      } else if (isLeft && this.debugPanel.settings.manualKillerControl) {
-        if (this.killer && !this.isPanningCamera) {
-          this.killer.performAttack(this.player);
-        }
-      }
+      const panRes = this.cameraCtrl.handlePointerDown(pointer);
+      if (panRes.handled) return;
+      if (pointer.rightButtonDown() && this.generatorPlacer?.isActive) { this.generatorPlacer.handlePointerDown(pointer); return; }
+      if (panRes.canPlaceGenerator && this.generatorPlacer?.isActive) { this.generatorPlacer.handlePointerDown(pointer); }
+      else if (panRes.isLeftClick && this.debugPanel.settings.manualKillerControl && this.killer && !this.cameraCtrl.isPanningCamera) { this.killer.performAttack(this.player); }
     });
 
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      const isSpace = isSpaceKeyDown();
-      const isMiddle = isMiddleButton(pointer);
-      const isLeft = isLeftButton(pointer);
-
-      const panState = evaluateCameraPanState(
-        isMiddle,
-        isSpace,
-        isLeft,
-        this.debugPanel.settings.freeCam,
-        Boolean(this.generatorPlacer?.isActive)
-      );
-
-      if (panState.shouldPan || (this.isPanningCamera && (isMiddle || (isSpace && isLeft)))) {
-        executeCameraPan(pointer);
-      }
-    });
-
-    this.input.on('pointerup', () => {
-      this.isPanningCamera = false;
-    });
-
-    this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gameObjects: any, _deltaX: number, deltaY: number) => {
-      if (this.debugPanel.settings.freeCam || this.generatorPlacer?.isActive) {
-        const step = deltaY > 0 ? -0.05 : 0.05;
-        const newZoom = Phaser.Math.Clamp(this.cameras.main.zoom + step, 0.3, 1.5);
-        this.cameras.main.setZoom(newZoom);
-        this.debugPanel.settings.cameraZoom = Number(newZoom.toFixed(2));
-        this.debugPanel.saveSettingsToStorage();
-        this.updateUiZoomScale(newZoom);
-      }
-    });
-
-    // 7. Inputs
     if (this.input.keyboard) {
       this.keyE = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
       this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     }
-    // Previne comportamento nativo de autoscroll do navegador com botão do meio (scroll click)
-    window.addEventListener('mousedown', (e) => {
-      if (e.button === 1) e.preventDefault();
-    });
-    window.addEventListener('auxclick', (e) => {
-      if (e.button === 1) e.preventDefault();
-    });
-    // Previne scroll de página nativo ao segurar Espaço no navegador e desbloqueia o AudioContext
     window.addEventListener('keydown', (e) => {
       AudioManager.getInstance().ensureContextRunning();
       if (e.code === 'Space') e.preventDefault();
@@ -382,356 +183,136 @@ export class SandboxScene extends Phaser.Scene {
     window.addEventListener('keyup', (e) => this.activeKeys.delete(e.code), true);
     window.addEventListener('resize', () => this.scale.refresh());
 
-    // 7. Restauração do Setup Ativo via LocalStorage (Resistência ao F5)
-    const savedActiveGens = loadActiveGeneratorsFromStorage();
-    if (savedActiveGens && savedActiveGens.length > 0) {
-      this.instantiateGeneratorsFromCandidates(savedActiveGens, false);
-      this.telemetryHud.showNotification(
-        `🔄 Setup restaurado do LocalStorage: ${savedActiveGens.length} geradores ativos recuperados.`,
-        false
-      );
+    if (this.generatorLifecycle.initFromStorage()) {
+      this.telemetryHud.showNotification(`🔄 Setup restaurado do LocalStorage: ${this.generatorLifecycle.totalCount} geradores recuperados.`, false);
     }
 
-    // 8. Inicialização do AudioManager a partir das configurações salvas
     const audio = AudioManager.getInstance();
     audio.setEnabled(this.debugPanel.settings.audioEnabled);
     audio.setMasterVolume(this.debugPanel.settings.masterVolume);
-
-    // Feedback visual de áudio em espera (Autoplay Policy Feedback)
-    if (!audio.isContextRunning()) {
-      this.telemetryHud.setAudioPromptVisible(true);
-    } else {
-      this.telemetryHud.setAudioPromptVisible(false);
-    }
-
-    audio.onAudioUnlocked(() => {
-      this.telemetryHud.setAudioPromptVisible(false);
-    });
-
-    if (typeof document !== 'undefined') {
-      const audioPromptEl = document.getElementById('hud-audio-prompt');
-      if (audioPromptEl) {
-        audioPromptEl.addEventListener('click', () => {
-          audio.ensureContextRunning();
-        });
-      }
-    }
+    this.telemetryHud.setAudioPromptVisible(!audio.isContextRunning());
+    audio.onAudioUnlocked(() => this.telemetryHud.setAudioPromptVisible(false));
+    if (typeof document !== 'undefined') document.getElementById('hud-audio-prompt')?.addEventListener('click', () => audio.ensureContextRunning());
   }
 
   update(_time: number, delta: number): void {
-    if (this.generatorPlacer?.isActive) {
-      this.generatorPlacer.update(this.input.activePointer);
-    }
-
-    // 1. Atualização contínua de regressão e faíscas em todos os geradores ativos
-    const showVisionDebug = Boolean(this.debugPanel.settings.showKillerVision || this.debugPanel.settings.showPhysicsDebug);
-    for (const gen of this.generators) {
-      gen.update(delta);
-      gen.updateAudioRadiusZone(showVisionDebug);
-    }
-
+    if (this.generatorPlacer?.isActive) this.generatorPlacer.update(this.input.activePointer);
+    this.generatorLifecycle.update(delta, Boolean(this.debugPanel.settings.showKillerVision || this.debugPanel.settings.showPhysicsDebug));
     this.handleGeneratorInteraction(delta);
     this.player.update(delta, this.isRepairing, this.debugPanel.settings);
-
-    // Disparo manual de ataque via Barra de Espaço (apenas se manualKillerControl estiver explicitamente ativo)
     if (this.keySpace && Phaser.Input.Keyboard.JustDown(this.keySpace) && this.debugPanel.settings.manualKillerControl) {
       this.killer.performAttack(this.player);
     }
+    this.killer.update(delta, this.player, this.generatorLifecycle.uncompletedGenerators, this.debugPanel.settings);
+    this.skillCheck.update(delta, this.isRepairing, this.debugPanel.settings.skillCheckFrequency, this.repairStaggerTimer <= 0, (r) => this.onSkillCheckResult(r));
 
-    this.killer.update(delta, this.player, this.generators.filter((g) => !g.isCompleted), this.debugPanel.settings);
-    this.skillCheck.update(
-      delta, this.isRepairing, this.debugPanel.settings.skillCheckFrequency,
-      this.repairStaggerTimer <= 0, (res) => this.onSkillCheckResult(res)
-    );
-
-    // ==========================================
-    // EFEITOS SONOROS PROCEDURAIS (AudioManager)
-    // ==========================================
     const audio = AudioManager.getInstance();
+    this.waveVisualizer.updateFootsteps(delta, {
+      player: this.player, killer: this.killer, survivorActive: Boolean(this.debugPanel.settings.survivorActive),
+      runNoiseRadius: this.debugPanel.settings.runNoiseRadius, walkNoiseRadius: this.debugPanel.settings.walkNoiseRadius,
+      onNoiseEmitted: (n) => this.events.emit('noise-emitted', n)
+    }, audio);
 
-    // 1. Passos cadenciados do Survivor sincronizados à locomoção
-    if (
-      this.player.isActive &&
-      this.debugPanel.settings.survivorActive &&
-      this.player.isMoving &&
-      this.player.currentSpeed > 5
-    ) {
-      this.survivorFootstepTimer += delta;
-      const survivorCadence = this.player.isSprinting ? 270 : 380;
-      if (this.survivorFootstepTimer >= survivorCadence) {
-        this.survivorFootstepTimer = 0;
-        audio.playSurvivorFootstep(this.player.isSprinting);
-        const radiusMeters = this.player.isSprinting
-          ? (this.debugPanel.settings.runNoiseRadius ?? 14.0)
-          : (this.debugPanel.settings.walkNoiseRadius ?? 4.0);
-        this.events.emit('noise-emitted', {
-          x: this.player.x,
-          y: this.player.y,
-          radiusInMeters: radiusMeters,
-          source: 'survivor'
-        });
-        this.spawnSoundWave(this.player.x, this.player.y, radiusMeters, 0x00ffff, 900);
-      }
-    } else {
-      this.survivorFootstepTimer = 0;
-    }
+    if (this.isRepairing && this.activeNearbyGen && !this.activeNearbyGen.isCompleted) audio.startGeneratorRepairSound();
+    else audio.stopGeneratorRepairSound();
 
-    // 2. Passos pesados cadenciados do Killer
-    if (this.killer.isMoving) {
-      this.killerFootstepTimer += delta;
-      const killerCadence = this.killer.state === 'CHASE' ? 330 : 440;
-      if (this.killerFootstepTimer >= killerCadence) {
-        this.killerFootstepTimer = 0;
-        const distToPlayer = (this.player.isActive && this.debugPanel.settings.survivorActive)
-          ? Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y)
-          : 0;
-        const volScale = distToPlayer > TERROR_RADIUS_MAX ? 0 : Math.max(0.1, 1 - distToPlayer / TERROR_RADIUS_MAX);
-        audio.playKillerFootstep(volScale);
-        this.spawnSoundWave(this.killer.x, this.killer.y, 14.0, 0xa855f7, 900);
-        this.events.emit('noise-emitted', {
-          x: this.killer.x,
-          y: this.killer.y,
-          radiusInMeters: 14.0,
-          source: 'killer'
-        });
-      }
-    } else {
-      this.killerFootstepTimer = 0;
-    }
+    const isSpec = this.isSpectatorMode;
+    const isSurv = this.player.isActive && this.debugPanel.settings.survivorActive && !isSpec;
+    const lx = isSurv ? this.player.x : (this.cameras.main.scrollX + this.cameras.main.width / 2);
+    const ly = isSurv ? this.player.y : (this.cameras.main.scrollY + this.cameras.main.height / 2);
+    this.generatorLifecycle.updateDamagedAudio(lx, ly, audio);
 
-    // 3. Som contínuo de manutenção / reparo de gerador
-    if (this.isRepairing && this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
-      audio.startGeneratorRepairSound();
-    } else {
-      audio.stopGeneratorRepairSound();
-    }
-
-    // 4. Atenuação Espacial de Áudio de Gerador Danificado / Regredindo (10m = 600px cutoff)
-    const isSpectator = this.isSpectatorMode;
-    const isSurvivorActive = this.player.isActive && this.debugPanel.settings.survivorActive && !isSpectator;
-    const listenerX = isSurvivorActive
-      ? this.player.x
-      : (this.cameras.main.scrollX + this.cameras.main.width / 2);
-    const listenerY = isSurvivorActive
-      ? this.player.y
-      : (this.cameras.main.scrollY + this.cameras.main.height / 2);
-
-    let closestDamagedGen: Generator | null = null;
-    let closestDamagedDist = Infinity;
-
-    for (const gen of this.generators) {
-      if (gen.isRegressing && !gen.isCompleted) {
-        const d = Phaser.Math.Distance.Between(listenerX, listenerY, gen.x, gen.y);
-        if (d < closestDamagedDist) {
-          closestDamagedDist = d;
-          closestDamagedGen = gen;
-        }
-      }
-    }
-
-    if (closestDamagedGen) {
-      audio.updateDamagedGeneratorAudio(listenerX, listenerY, closestDamagedGen.x, closestDamagedGen.y);
-    } else {
-      audio.updateDamagedGeneratorAudio(Infinity);
-    }
-
-    // 5. Raio de Terror de Duas Camadas (Heartbeat < 500px + Drone Dissonante < 250px ou CHASE)
-    const terrorDist = isSpectator
-      ? Infinity
-      : Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y);
-    const killerState = isSpectator ? 'STANDBY' : this.killer.state;
-
-    audio.updateTerrorRadius(terrorDist, killerState, delta);
-
-    // 6. Feedback Visual do Raio de Terror (Coração Pulsante & Vinheta)
-    this.hud.updateHeartbeatVisual(
-      terrorDist,
-      isSpectator,
-      this.debugPanel.settings.terrorHeartbeatVisual
-    );
+    const terrorDist = isSpec ? Infinity : Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y);
+    audio.updateTerrorRadius(terrorDist, isSpec ? 'STANDBY' : this.killer.state, delta);
+    this.hud.updateHeartbeatVisual(terrorDist, isSpec, this.debugPanel.settings.terrorHeartbeatVisual);
   }
 
-  /**
-   * Manages repair proximity prompt [E], progress increase, and key release logic
-   */
   private handleGeneratorInteraction(delta: number): void {
     if (!this.player.isActive || !this.debugPanel.settings.survivorActive) {
       if (this.isRepairing) this.stopRepairing();
       this.repairPrompt.hide();
       return;
     }
-
     if (this.repairStaggerTimer > 0) {
       this.repairStaggerTimer -= delta;
       this.repairPrompt.show('💥 SISTEMA EM CURTO-CIRCUITO...', 0, false, true);
       return;
     }
 
-    let closestGen: Generator | null = null;
-    let closestDist = Infinity;
-    for (const gen of this.generators) {
-      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, gen.x, gen.y);
-      if (dist <= gen.interactionRadius && dist < closestDist) {
-        closestDist = dist;
-        closestGen = gen;
-      }
-    }
-    this.activeNearbyGen = closestGen;
-
-    if (!closestGen || closestGen.isCompleted) {
-      if (this.isRepairing) this.stopRepairing();
-      this.repairPrompt.hide();
-      return;
-    }
-
     const isPressingE = Boolean(this.keyE?.isDown || this.activeKeys.has('KeyE'));
-    if (isPressingE) {
-      if (!this.isRepairing) {
-        this.isRepairing = true;
-        this.skillCheck.resetTimer(this.debugPanel.settings.skillCheckFrequency);
-      }
+    const res = this.generatorLifecycle.handleInteraction(
+      this.player.x, this.player.y, isPressingE, delta,
+      this.debugPanel.settings.generatorRepairTime, this.repairPrompt, this.isRepairing,
+      () => this.skillCheck.resetTimer(this.debugPanel.settings.skillCheckFrequency),
+      (msg) => this.telemetryHud.showNotification(msg, false)
+    );
+    this.activeNearbyGen = res.activeNearbyGen;
+    this.isRepairing = res.isRepairing;
 
-      // Se o gerador estiver regredindo, consertar por >= 0.2s (200ms) estabiliza a máquina
-      if (closestGen.isRegressing) {
-        const stabilized = closestGen.onRepairTick(delta);
-        if (stabilized) {
-          this.telemetryHud.showNotification('🔧 Gerador estabilizado! Regressão interrompida.', false);
-        }
-      }
-
-      const repairRate = 100 / Math.max(1, this.debugPanel.settings.generatorRepairTime);
-      const isComplete = closestGen.addProgress(repairRate * (delta / 1000));
-      const promptLabel = closestGen.isRegressing
-        ? `⚡ ESTABILIZANDO... [E] Manter Pressionado (${closestGen.roomName})`
-        : `🔧 REPARANDO... [E] Manter Pressionado (${closestGen.roomName})`;
-      this.repairPrompt.show(promptLabel, closestGen.progress, true, false, closestGen.isRegressing);
-
-      if (isComplete) {
-        this.stopRepairing();
-        const completed = this.generators.filter((g) => g.isCompleted).length;
-        const required = this.debugPanel.settings.generatorRequiredTarget;
-
-        if (completed >= required && !this.isMatchWon) {
-          this.isMatchWon = true;
-          SoundFX.playVictory();
-          this.cameras.main.flash(500, 40, 180, 255);
-          this.telemetryHud.showVictoryAlert(completed, required);
-        } else {
-          this.telemetryHud.showNotification(
-            `⚡ ${closestGen.name} restaurado! (${completed}/${required} - meta da partida)`,
-            false
-          );
-        }
-      }
-    } else {
-      if (this.isRepairing) this.stopRepairing();
-      closestGen.repairAccumulatedTime = 0;
-      closestGen.updateVisuals(false);
-      if (closestGen.isRegressing) {
-        this.repairPrompt.show(
-          `⚠️ [E] Reparar ${closestGen.name} (EM REGRESSÃO)`,
-          closestGen.progress,
-          false,
-          false,
-          true
-        );
-      } else {
-        this.repairPrompt.show(`[E] Reparar ${closestGen.name} (${closestGen.roomName})`, closestGen.progress, false);
-      }
+    if (res.justCompletedGen) {
+      this.stopRepairing();
+      const completed = this.generatorLifecycle.completedCount;
+      const req = this.debugPanel.settings.generatorRequiredTarget;
+      if (completed >= req && !this.isMatchWon) this.triggerVictory(completed, req);
+      else this.telemetryHud.showNotification(`⚡ ${res.justCompletedGen.name} restaurado! (${completed}/${req} - meta da partida)`, false);
     }
   }
 
   private stopRepairing(): void {
     this.isRepairing = false;
     AudioManager.getInstance().stopGeneratorRepairSound();
-    if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
-      this.activeNearbyGen.updateVisuals(false);
-    }
-    if (this.skillCheck.isActive) {
-      this.skillCheck.cancelSkillCheck(true);
-    }
-    this.persistActiveGenerators();
+    if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) this.activeNearbyGen.updateVisuals(false);
+    if (this.skillCheck.isActive) this.skillCheck.cancelSkillCheck(true);
+    this.generatorLifecycle.persistActiveGenerators();
   }
 
-  /**
-   * Renderiza uma onda acústica expansiva (ripple) animada com fade-out.
-   * @param x Coordenada X central.
-   * @param y Coordenada Y central.
-   * @param radiusInMeters Raio final da expansão acústica em metros.
-   * @param color Cor hexadecimal da linha.
-   * @param duration Duração da interpolação em milissegundos.
-   */
-  public spawnSoundWave(
-    x: number,
-    y: number,
-    radiusInMeters: number,
-    color: number = 0x00ffff,
-    duration: number = 900
-  ): void {
-    if (!this.debugPanel?.settings?.showSoundWaves) return;
-
-    const targetRadius = metersToPixels(radiusInMeters);
-    const wave = this.add.graphics({ x, y });
-    wave.setDepth(7);
-
-    const waveData = { progress: 0, alpha: 0.75 };
-    this.tweens.add({
-      targets: waveData,
-      progress: 1,
-      alpha: 0,
-      duration,
-      ease: 'Cubic.easeOut',
-      onUpdate: () => {
-        wave.clear();
-        const currentRadius = targetRadius * waveData.progress;
-        wave.lineStyle(2.5, color, waveData.alpha);
-        wave.strokeCircle(0, 0, currentRadius);
-      },
-      onComplete: () => {
-        wave.destroy();
-      }
-    });
+  public spawnSoundWave(x: number, y: number, radiusM: number, color = 0x00ffff, duration = 900): void {
+    this.waveVisualizer.spawnSoundWave(x, y, radiusM, color, duration);
   }
 
   private onSkillCheckResult(result: SkillCheckResult): void {
     if (result === 'GREAT' || result === 'GOOD') {
-      if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
-        this.activeNearbyGen.addProgress(result === 'GREAT' ? 5 : 1.5);
-      }
+      if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) this.activeNearbyGen.addProgress(result === 'GREAT' ? 5 : 1.5);
     } else {
-      AudioManager.getInstance().playGeneratorExplosion();
-      AudioManager.getInstance().stopGeneratorRepairSound();
+      AudioManager.getInstance().playGeneratorExplosion(); AudioManager.getInstance().stopGeneratorRepairSound();
       if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
-        this.activeNearbyGen.explode();
-        this.repairStaggerTimer = 1400;
-        this.isRepairing = false;
-        this.persistActiveGenerators();
-        this.skillCheck.triggerNoiseAlert(this.activeNearbyGen.x, this.activeNearbyGen.y);
-        this.killer.alertToNoise(this.activeNearbyGen.x, this.activeNearbyGen.y, this.activeNearbyGen);
+        const gen = this.activeNearbyGen;
+        gen.explode(); this.repairStaggerTimer = 1400; this.isRepairing = false;
+        this.generatorLifecycle.persistActiveGenerators();
+        this.skillCheck.triggerNoiseAlert(gen.x, gen.y); this.killer.alertToNoise(gen.x, gen.y, gen);
         this.telemetryHud.showNotification('💥 O Assassino foi alertado da explosão do gerador!', true);
-        this.spawnSoundWave(this.activeNearbyGen.x, this.activeNearbyGen.y, 36.0, 0xff5522, 800);
-        this.events.emit('noise-emitted', {
-          x: this.activeNearbyGen.x,
-          y: this.activeNearbyGen.y,
-          radiusInMeters: 36.0,
-          source: 'generator'
-        });
+        this.spawnSoundWave(gen.x, gen.y, 36.0, 0xff5522, 800);
+        this.events.emit('noise-emitted', { x: gen.x, y: gen.y, radiusInMeters: 36.0, source: 'generator' });
       } else {
-        SoundFX.playExplosion();
-        this.cameras.main.shake(300, 0.01);
+        SoundFX.playExplosion(); this.cameras.main.shake(300, 0.01);
       }
     }
     this.skillCheck.resetTimer(this.debugPanel.settings.skillCheckFrequency);
   }
 
+  private triggerVictory(completed: number, required: number): void {
+    this.isMatchWon = true;
+    SoundFX.playVictory();
+    this.cameras.main.flash(500, 40, 180, 255);
+    this.telemetryHud.showVictoryAlert(completed, required);
+  }
+
+  private handleResetDefaults(): void {
+    const s = this.debugPanel.settings;
+    this.player.updateHitbox(s.hitboxRadius, s.playerScale); this.killer.updateHitbox(s.hitboxRadius, s.playerScale);
+    this.player.setActiveState(s.survivorActive); this.cameraCtrl.setZoom(s.cameraZoom);
+    this.physics.world.drawDebug = s.showPhysicsDebug; this.cameraCtrl.setFreeCam(s.freeCam, this.player.sprite);
+    this.generatorPlacer.setActive(s.editorMode); this.generatorPlacer.snapToGrid = s.placerSnapToGrid;
+    AudioManager.getInstance().setEnabled(s.audioEnabled); AudioManager.getInstance().setMasterVolume(s.masterVolume);
+    if (!s.terrorHeartbeatVisual) this.telemetryHud.stopHeartbeatVisual();
+  }
+
   private updateTelemetry(): void {
     const fps = Math.round(this.game.loop.actualFps);
+    const pRad = this.debugPanel.settings.hitboxRadius * this.debugPanel.settings.playerScale;
     const centerDist = Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y);
-    const playerRadius = this.debugPanel.settings.hitboxRadius * this.debugPanel.settings.playerScale;
-    const killerRadius = playerRadius * 1.28;
-    const effectiveDist = calculateEdgeToEdgeDistance(centerDist, playerRadius, killerRadius);
-    const distMeters = pixelsToMeters(effectiveDist);
-    const killerDistStr = `${distMeters.toFixed(1)}m`;
+    const effDist = calculateEdgeToEdgeDistance(centerDist, pRad, pRad * 1.28);
+    const distM = pixelsToMeters(effDist);
 
     const mon = this.debugPanel.monitorState;
     mon.currentSpeed = pixelsToMeters(this.player.currentSpeed, 2);
@@ -739,179 +320,29 @@ export class SandboxScene extends Phaser.Scene {
     mon.isSprinting = this.player.isSprinting;
     mon.rotationDeg = `${Math.round(Phaser.Math.RadToDeg(this.player.rotation))}°`;
     mon.playerScale = `${this.debugPanel.settings.playerScale.toFixed(2)}x`;
-    mon.hitboxPixels = `${Math.round(this.debugPanel.settings.hitboxRadius * 2 * this.debugPanel.settings.playerScale)}px`;
+    mon.hitboxPixels = `${Math.round(pRad * 2)}px`;
     mon.playerX = this.player.x.toFixed(1);
     mon.playerY = this.player.y.toFixed(1);
     mon.currentTile = formatCurrentTile(this.player.x, this.player.y);
     mon.killerState = this.killer.state;
-    mon.killerDist = `${distMeters.toFixed(1)}m (${Math.round(effectiveDist)}px)`;
+    mon.killerDist = `${distM.toFixed(1)}m (${Math.round(effDist)}px)`;
     mon.fps = fps;
 
-    const completedCount = this.generators.filter((g) => g.isCompleted).length;
-    const totalGens = this.generators.length;
-    const requiredGens = this.debugPanel?.settings.generatorRequiredTarget ?? 5;
-    this.telemetryHud.update(fps, this.killer.state, killerDistStr, completedCount, totalGens, requiredGens);
+    this.telemetryHud.update(fps, this.killer.state, `${distM.toFixed(1)}m`, this.generatorLifecycle.completedCount, this.generatorLifecycle.totalCount, this.debugPanel.settings.generatorRequiredTarget);
     this.telemetryHud.updateRadiusLegend(this.debugPanel.settings);
   }
 
-  /**
-   * Propaga o novo nível de zoom para elementos de UI flutuantes e prompts,
-   * assegurando tamanho aparente legível e estável na tela.
-   */
   private updateUiZoomScale(zoom: number): void {
-    if (this.generators) {
-      this.generators.forEach((g) => g.updateZoomScale(zoom));
-    }
-    if (this.repairPrompt) {
-      this.repairPrompt.updateZoomScale(zoom);
-    }
-    if (this.generatorPlacer) {
-      this.generatorPlacer.updateZoomScale(zoom);
-    }
-    if (this.telemetryHud) {
-      this.telemetryHud.updateZoomScale(zoom);
-    }
+    this.generatorLifecycle?.updateZoomScale(zoom);
+    this.repairPrompt?.updateZoomScale(zoom);
+    this.generatorPlacer?.updateZoomScale(zoom);
+    this.telemetryHud?.updateZoomScale(zoom);
   }
 
-  /**
-   * Atualiza a malha de navegação (navGrid) e os pesos do EasyStar A*
-   * tratando os geradores ativos como obstáculos sólidos intransponíveis.
-   */
-  public refreshNavGridAndEasyStar(): void {
-    const activeGens = this.generators.map((g) => ({
-      x: g.x,
-      y: g.y,
-      rotation: g.rotation
-    }));
-
-    this.mapData.navGrid = updateNavGridWithGenerators(
-      this.mapData.baseNavGrid,
-      activeGens,
-      TILE_SIZE
-    );
-
-    const weightedGrid = buildAiWeightedGrid(this.mapData.navGrid);
-    this.easystar.setGrid(weightedGrid);
-    this.killer.updateNavGrid(this.mapData.navGrid, weightedGrid);
-
-    if (this.generatorPlacer) {
-      this.generatorPlacer.navGrid = this.mapData.navGrid;
-    }
-  }
-
-  /**
-   * Instancia uma lista de candidatos como geradores funcionais ativos na cena.
-   */
-  public instantiateGeneratorsFromCandidates(
-    candidates: Array<GeneratorSpawnCandidate | ActiveGeneratorData>,
-    persist: boolean = true
-  ): void {
-    this.clearAllGenerators(false, false);
-    this.isMatchWon = false;
-    const zoom = this.cameras.main.zoom || 1.0;
-
-    candidates.forEach((cand, idx) => {
-      const def = candidateToGeneratorDef(cand, idx);
-      const gen = new Generator(this, def, this.mapData.obstacles);
-      if ('progress' in cand && typeof cand.progress === 'number') {
-        gen.progress = Math.min(100, Math.max(0, cand.progress));
-        if (gen.progress >= 100 || ('isCompleted' in cand && cand.isCompleted)) {
-          gen.isCompleted = true;
-          gen.setFrame(2);
-        } else if (gen.progress > 0) {
-          gen.setFrame(1);
-        }
-        if ('isRegressing' in cand && cand.isRegressing && !gen.isCompleted && gen.progress > 0) {
-          gen.isRegressing = true;
-          AudioManager.getInstance().startGeneratorSparkingSound(gen.id);
-        }
-        gen.updateVisuals(false);
-      }
-      gen.updateZoomScale(zoom);
-      this.generators.push(gen);
-    });
-
-    this.refreshNavGridAndEasyStar();
-    this.updateUiZoomScale(zoom);
-
-    if (persist) {
-      this.persistActiveGenerators();
-    }
-  }
-
-  /**
-   * Sorteia até N geradores a partir do pool de candidatos e os instancia no mapa.
-   */
-  public spawnRandomGenerators(count?: number): void {
-    this.isMatchWon = false;
-    const targetCount = count ?? (this.debugPanel?.settings.generatorTotalTarget || 8);
-    const pool = getMappedCandidatePool();
-    if (pool.length === 0) {
-      this.telemetryHud.showNotification('⚠️ Nenhum candidato a gerador disponível no pool.', true);
-      return;
-    }
-    const chosen = selectRandomCandidates(pool, targetCount);
-    this.instantiateGeneratorsFromCandidates(chosen);
-    this.telemetryHud.showNotification(`🎲 ${chosen.length} geradores sorteados e instanciados no mapa!`, false);
-  }
-
-  /**
-   * Carrega e instancia todos os candidatos cadastrados no pool (validação integral).
-   */
-  public loadFullCandidatePool(): void {
-    this.isMatchWon = false;
-    const pool = getMappedCandidatePool();
-    if (pool.length === 0) {
-      this.telemetryHud.showNotification('⚠️ Nenhum candidato a gerador disponível no pool.', true);
-      return;
-    }
-    this.instantiateGeneratorsFromCandidates(pool);
-    this.telemetryHud.showNotification(`📦 Pool completo (${pool.length} geradores) instanciado no mapa!`, false);
-  }
-
-  /**
-   * Remove e destrói todos os geradores ativos da cena, retornando o Killer para STANDBY.
-   */
-  public clearAllGenerators(notify: boolean = true, clearStorage: boolean = true): void {
-    this.isMatchWon = false;
-    if (this.isRepairing) {
-      this.stopRepairing();
-    }
-    this.activeNearbyGen = null;
-    this.repairPrompt.hide();
-
-    this.generators.forEach((g) => g.destroy());
-    this.generators = [];
-    AudioManager.getInstance().stopAllSparkingSounds();
-    this.refreshNavGridAndEasyStar();
-
-    if (clearStorage) {
-      clearActiveGeneratorsFromStorage();
-    }
-
-    if (notify) {
-      this.telemetryHud.showNotification('🧹 Todos os geradores foram removidos. Killer em STANDBY.', false);
-    }
-  }
-
-  /**
-   * Serializa e persiste o estado dos geradores ativos atuais no localStorage
-   * para assegurar resiliência a recarregamento de página (F5).
-   */
-  public persistActiveGenerators(): void {
-    if (!this.generators) return;
-    const data: ActiveGeneratorData[] = this.generators.map((g) => ({
-      id: g.id,
-      name: g.name,
-      roomName: g.roomName,
-      x: g.x,
-      y: g.y,
-      rotation: g.rotation,
-      progress: Math.floor(g.progress),
-      isCompleted: g.isCompleted,
-      isRegressing: g.isRegressing
-    }));
-    saveActiveGeneratorsToStorage(data);
-  }
+  public refreshNavGridAndEasyStar(): void { this.generatorLifecycle.refreshNavGrid(); }
+  public instantiateGeneratorsFromCandidates(c: Array<GeneratorSpawnCandidate | ActiveGeneratorData>, p = true): void { this.generatorLifecycle.instantiateGeneratorsFromCandidates(c, p); }
+  public spawnRandomGenerators(n?: number): void { this.generatorLifecycle.spawnRandomGenerators(n, this.debugPanel?.settings?.generatorTotalTarget); }
+  public loadFullCandidatePool(): void { this.generatorLifecycle.loadFullCandidatePool(); }
+  public clearAllGenerators(n = true, c = true): void { this.generatorLifecycle.clearAllGenerators(n, c); }
+  public persistActiveGenerators(): void { this.generatorLifecycle.persistActiveGenerators(); }
 }
-
