@@ -81,9 +81,11 @@ O projeto segue [Semantic Versioning 2.0.0](https://semver.org/):
 - **MINOR (`0.X.0`):** Adição de novas mecânicas, sistemas ou melhorias retrocompatíveis.
 - **PATCH (`0.0.X`):** Correções de bugs e ajustes retrocompatíveis.
 
-A cada mesclagem de PR na branch `main`:
-1. Uma tag Git anotada deve ser criada no formato `vMAJOR.MINOR.PATCH` (ex: `v0.4.0`).
-2. Release Notes devem descrever os itens entregues agrupados por tipo (`Features`, `Bugfixes`, `Refactorings`, `Documentation`).
+### 🚨 REGRA MANDATÓRIA PERMANENTE DE RELEASE
+> **A partir da versão v0.5.0, todo e qualquer merge direcionado à branch 'main' EXIGE:**
+> 1. Incremento de versão SemVer no `package.json` e `src/config/version.ts` (patch para fix, minor para feature/refactor).
+> 2. Criação de Git Tag anotada no commit do merge (ex: `git tag -a v0.5.0 -m "Release v0.5.0"`).
+> 3. Geração de Release Notes estruturada com resumo das alterações (ou via GitHub Release cli `gh release create`).
 
 ---
 

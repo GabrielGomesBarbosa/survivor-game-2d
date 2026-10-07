@@ -110,6 +110,15 @@
         background: rgba(255, 255, 255, 0.15);
       }
 
+      .hud-version-tag {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 11px;
+        font-weight: 700;
+        color: #64748b;
+        letter-spacing: 0.5px;
+        user-select: none;
+      }
+
       .hud-label {
         color: #94a3b8;
         font-size: 11px;
@@ -493,6 +502,10 @@
         <div id="game-container">
           <!-- Card de FPS e Telemetria em Tempo Real (Canto Superior Esquerdo) -->
           <div id="hud-telemetry">
+            <div class="hud-pill">
+              <span id="hud-version-val" class="hud-version-tag">v0.5.0</span>
+            </div>
+            <div class="hud-separator"></div>
             <div class="hud-pill">
               <span id="hud-fps-dot" class="hud-indicator-dot dot-good"></span>
               <span class="hud-label">FPS:</span>

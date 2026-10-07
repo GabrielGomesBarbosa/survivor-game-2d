@@ -344,7 +344,8 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
         'hud-fps-dot': { textContent: '', className: '', style: {} },
         'hud-killer-state': { textContent: '', className: '', style: {} },
         'hud-killer-dist': { textContent: '', className: '', style: {} },
-        'hud-gens-val': { textContent: '', className: '', style: {} }
+        'hud-gens-val': { textContent: '', className: '', style: {} },
+        'hud-version-val': { textContent: '', className: '', style: {} }
       };
 
       globalThis.document = {
@@ -354,6 +355,12 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
 
     afterEach(() => {
       globalThis.document = originalDocument;
+    });
+
+    it('initializes and binds on-screen version display to APP_VERSION', () => {
+      const hud = new TelemetryHUD(mockScene);
+      expect(hud.version).toBe('v0.5.0');
+      expect(mockElements['hud-version-val'].textContent).toBe('v0.5.0');
     });
 
     it('displays killer distance in meters when passed a metric string', () => {

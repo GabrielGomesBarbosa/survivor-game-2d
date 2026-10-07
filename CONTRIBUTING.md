@@ -108,12 +108,12 @@ git push -u origin feature/sua-feature-aqui
 ## 🏷️ Versionamento Semântico e Releases
 
 Ao mesclar um PR na `main`:
-1. Incremente a versão em conformidade com o SemVer (`MAJOR.MINOR.PATCH`).
+1. Incremente a versão em conformidade com o SemVer (`MAJOR.MINOR.PATCH`) em `package.json` e `src/config/version.ts`.
 2. Gere a Git Tag anotada correspondente:
    ```bash
    git checkout main
    git pull origin main
-   git tag -a v0.4.0 -m "Release v0.4.0: Spatial audio attenuation and DOM HUD legend"
-   git push origin v0.4.0
+   git tag -a v0.5.0 -m "Release v0.5.0: Modular architecture refactoring and on-screen version display"
+   git push origin v0.5.0
    ```
-3. Registre a Release no GitHub detalhando as principais melhorias implementadas.
+3. Registre a Release no GitHub detalhando as principais melhorias implementadas via `gh release create`.

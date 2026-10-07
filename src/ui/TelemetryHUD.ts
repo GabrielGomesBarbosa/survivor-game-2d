@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { formatGeneratorsHudText, calculateZoomCompensationScale, pixelsToMeters } from '../utils/gameLogic';
 import { calculateTerrorCadence } from '../audio/AudioManager';
 import { TERROR_RADIUS_MAX, DebugSettings } from '../config/constants';
+import { APP_VERSION } from '../config/version';
 
 /**
  * @class TelemetryHUD
@@ -34,6 +35,7 @@ export class TelemetryHUD {
   private hudRadiusLegend: HTMLElement | null = null;
   private legendVisionVal: HTMLElement | null = null;
   private hudAudioPrompt: HTMLElement | null = null;
+  private hudVersionVal: HTMLElement | null = null;
 
   /**
    * @param scene Phaser scene hosting the HUD container
@@ -58,6 +60,10 @@ export class TelemetryHUD {
     this.hudRadiusLegend = document.getElementById('hud-radius-legend');
     this.legendVisionVal = document.getElementById('legend-vision-dist');
     this.hudAudioPrompt = document.getElementById('hud-audio-prompt');
+    this.hudVersionVal = document.getElementById('hud-version-val');
+    if (this.hudVersionVal) {
+      this.hudVersionVal.textContent = APP_VERSION;
+    }
   }
 
   /**
@@ -464,6 +470,20 @@ export class TelemetryHUD {
         this.hudAudioPrompt.classList.add('hidden');
       }
     }
+  }
+
+  /**
+   * Returns the current application version string.
+   */
+  public get version(): string {
+    return APP_VERSION;
+  }
+
+  /**
+   * Reference to the DOM element displaying the version, if cached.
+   */
+  public get versionElement(): HTMLElement | null {
+    return this.hudVersionVal;
   }
 
   /**
