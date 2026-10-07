@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { formatGeneratorsHudText, calculateZoomCompensationScale, pixelsToMeters } from '../utils/gameLogic';
 import { calculateTerrorCadence } from '../audio/AudioManager';
-import { TERROR_RADIUS_MAX } from '../config/constants';
+import { TERROR_RADIUS_MAX, DebugSettings } from '../config/constants';
 
 /**
  * @class TelemetryHUD
@@ -31,6 +31,9 @@ export class TelemetryHUD {
   private hudKillerState: HTMLElement | null = null;
   private hudKillerDist: HTMLElement | null = null;
   private hudGensVal: HTMLElement | null = null;
+  private hudRadiusLegend: HTMLElement | null = null;
+  private legendVisionVal: HTMLElement | null = null;
+  private hudAudioPrompt: HTMLElement | null = null;
 
   /**
    * @param scene Phaser scene hosting the HUD container
@@ -43,7 +46,7 @@ export class TelemetryHUD {
   }
 
   /**
-   * Cache references to DOM telemetry elements in the header
+   * Cache references to DOM telemetry elements in the header and overlay
    */
   private initDOMCache(): void {
     if (typeof document === 'undefined') return;
@@ -52,6 +55,9 @@ export class TelemetryHUD {
     this.hudKillerState = document.getElementById('hud-killer-state');
     this.hudKillerDist = document.getElementById('hud-killer-dist');
     this.hudGensVal = document.getElementById('hud-gens-val');
+    this.hudRadiusLegend = document.getElementById('hud-radius-legend');
+    this.legendVisionVal = document.getElementById('legend-vision-dist');
+    this.hudAudioPrompt = document.getElementById('hud-audio-prompt');
   }
 
   /**
@@ -158,6 +164,8 @@ export class TelemetryHUD {
         this.hudKillerState.className = 'hud-val state-chase';
       } else if (killerState === 'DESATIVADO' || killerState === 'OFFLINE' || killerState === 'STANDBY') {
         this.hudKillerState.className = 'hud-val state-disabled';
+      } else if (killerState === 'INVESTIGATING_SOUND') {
+        this.hudKillerState.className = 'hud-val state-alert';
       } else {
         this.hudKillerState.className = 'hud-val state-patrol';
       }
@@ -398,6 +406,34 @@ export class TelemetryHUD {
     }
   }
 
+  /**
+   * Atualiza a visibilidade e os dados dinâmicos do card de legenda de raios na camada HTML/DOM
+   */
+  public updateRadiusLegend(settings: DebugSettings): void {
+    if (!this.hudRadiusLegend && typeof document !== 'undefined') {
+      this.hudRadiusLegend = document.getElementById('hud-radius-legend');
+      this.legendVisionVal = document.getElementById('legend-vision-dist');
+    }
+    if (!this.hudRadiusLegend) return;
+
+    const isVisible = Boolean(
+      settings.showRadiusLegend &&
+      (settings.showKillerVision || settings.showPhysicsDebug)
+    );
+    this.hudRadiusLegend.style.display = isVisible ? 'flex' : 'none';
+
+    if (this.legendVisionVal && settings.detectionRadius !== undefined) {
+      this.legendVisionVal.textContent = `${settings.detectionRadius.toFixed(1)}m`;
+    }
+  }
+
+  public get radiusLegend(): HTMLElement | null {
+    if (!this.hudRadiusLegend && typeof document !== 'undefined') {
+      this.hudRadiusLegend = document.getElementById('hud-radius-legend');
+    }
+    return this.hudRadiusLegend;
+  }
+
   public get isHeartbeatBeating(): boolean {
     return this.isBeating;
   }
@@ -415,6 +451,22 @@ export class TelemetryHUD {
   }
 
   /**
+   * Controla a visibilidade do prompt de áudio suspenso (Autoplay policy).
+   */
+  public setAudioPromptVisible(visible: boolean): void {
+    if (!this.hudAudioPrompt && typeof document !== 'undefined') {
+      this.hudAudioPrompt = document.getElementById('hud-audio-prompt');
+    }
+    if (this.hudAudioPrompt) {
+      if (visible) {
+        this.hudAudioPrompt.classList.remove('hidden');
+      } else {
+        this.hudAudioPrompt.classList.add('hidden');
+      }
+    }
+  }
+
+  /**
    * Clean up any game objects or listeners
    */
   public destroy(): void {
@@ -427,6 +479,9 @@ export class TelemetryHUD {
     }
     if (this.vignetteGraphics) {
       this.vignetteGraphics.destroy();
+    }
+    if (this.hudRadiusLegend) {
+      this.hudRadiusLegend.style.display = 'none';
     }
   }
 }

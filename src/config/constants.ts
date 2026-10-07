@@ -23,8 +23,9 @@ export const TERROR_RADIUS_METERS = 32;
 
 /**
  * Raio máximo de alcance do Raio de Terror em pixels (unificado entre Web Audio API e HUD).
+ * 32 metros nominais * 60 pixels/metro = 1920 pixels.
  */
-export const TERROR_RADIUS_MAX = 800;
+export const TERROR_RADIUS_MAX = 1920;
 
 export const GENERATOR_DEFS = [
   { id: 'gen-1', name: 'Gerador A', roomName: 'Ala Nordeste (Laboratório)', x: 4096, y: 768 },
@@ -65,11 +66,17 @@ export interface DebugSettings {
   survivorActive: boolean;
   generatorTotalTarget: number;
   generatorRequiredTarget: number;
-  // Audio Settings
+  // Audio & Perception Settings
   audioEnabled: boolean;
   masterVolume: number;
+  runNoiseRadius: number; // Raio em metros do ruído de corrida (padrão DBD: 14.0m)
+  walkNoiseRadius: number; // Raio em metros do ruído de caminhada (padrão DBD: 4.0m)
+  showSoundWaves: boolean; // Visualização gráfica de ondulações de som
+  // Killer Control Settings
+  manualKillerControl: boolean; // Permite disparar ataque M1 manual via clique ou espaço
   // HUD / Interface Settings
   terrorHeartbeatVisual: boolean;
+  showRadiusLegend: boolean; // Exibe card compacto de legenda dos círculos coloridos no HUD
 }
 
 /**
@@ -103,7 +110,12 @@ export const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
   generatorRequiredTarget: 5,
   audioEnabled: true,
   masterVolume: 0.7,
-  terrorHeartbeatVisual: true
+  runNoiseRadius: 14.0,
+  walkNoiseRadius: 4.0,
+  showSoundWaves: true,
+  manualKillerControl: false,
+  terrorHeartbeatVisual: true,
+  showRadiusLegend: true
 };
 
 /**

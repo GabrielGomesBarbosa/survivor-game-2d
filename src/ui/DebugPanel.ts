@@ -242,6 +242,12 @@ export class DebugPanel {
         .name('Killer Bot (IA Ativa)'),
       'Liga ou desliga o bot do Assassino. Quando desmarcado, a IA congela e o estado passa para DESATIVADO.'
     );
+    this.attachTooltip(
+      killerFolder
+        .add(this.settings, 'manualKillerControl')
+        .name('Controle Manual (M1/Espaço)'),
+      'Permite desferir golpes M1 (Lunge/Ataque) manualmente com clique do mouse ou barra de espaço.'
+    );
     killerFolder.open();
 
     // 5. Telemetria em Tempo Real
@@ -415,8 +421,8 @@ export class DebugPanel {
     );
     editorFolder.open();
 
-    // 8. Áudio
-    const audioFolder = this.gui.addFolder('Áudio');
+    // 8. Áudio / Percepção
+    const audioFolder = this.gui.addFolder('Áudio / Percepção');
     this.attachTooltip(
       audioFolder
         .add(this.settings, 'audioEnabled')
@@ -441,6 +447,38 @@ export class DebugPanel {
         }),
       'Volume mestre de todos os efeitos sonoros gerados via Web Audio API (0 a 1).'
     );
+    this.attachTooltip(
+      audioFolder
+        .add(this.settings, 'runNoiseRadius', 5.0, 25.0, 0.5)
+        .name('Raio Ruído Corrida (m)')
+        .decimals(1)
+        .onChange(() => {
+          this.saveSettingsToStorage();
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Alcance de propagação acústica do ruído emitido pelo Survivor correndo com Shift (padrão DBD: 14.0m / ~840px).'
+    );
+    this.attachTooltip(
+      audioFolder
+        .add(this.settings, 'walkNoiseRadius', 1.0, 10.0, 0.5)
+        .name('Raio Ruído Caminhada (m)')
+        .decimals(1)
+        .onChange(() => {
+          this.saveSettingsToStorage();
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Alcance de propagação acústica do ruído de passos caminhando (WASD normal, padrão DBD: 4.0m / ~240px).'
+    );
+    this.attachTooltip(
+      audioFolder
+        .add(this.settings, 'showSoundWaves')
+        .name('Visualizar Ondas de Som')
+        .onChange(() => {
+          this.saveSettingsToStorage();
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Renderiza ondas acústicas circulares em expansão ao redor do Survivor (ciano) e Killer (violeta) para cada passo executado.'
+    );
     audioFolder.open();
 
     // 9. HUD / Interface
@@ -456,6 +494,17 @@ export class DebugPanel {
           this.callbacks.onSettingsChanged?.(this.settings);
         }),
       'Exibe o ícone visual de coração pulsante no HUD sincronizado matematicamente ao Raio de Terror do Killer.'
+    );
+    this.attachTooltip(
+      hudFolder
+        .add(this.settings, 'showRadiusLegend')
+        .name('Mostrar Legenda de Raios')
+        .onChange((val: boolean) => {
+          this.settings.showRadiusLegend = Boolean(val);
+          this.saveSettingsToStorage();
+          this.callbacks.onSettingsChanged?.(this.settings);
+        }),
+      'Exibe um card visual no canto inferior esquerdo com a legenda descritiva de todas as circunferências e raios ativos.'
     );
     hudFolder.open();
 

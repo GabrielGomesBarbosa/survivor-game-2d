@@ -42,7 +42,7 @@ function normalizeVec(dx: number, dy: number): { x: number; y: number } {
   return { x: dx / len, y: dy / len };
 }
 
-export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO' | 'STANDBY';
+export type AIState = 'PATROL' | 'INSPECTING' | 'CHASE' | 'DESATIVADO' | 'STANDBY' | 'INVESTIGATING_SOUND';
 
 export interface IKillerPawn {
   x: number;
@@ -88,6 +88,10 @@ export class KillerAIController implements IKillerController {
   private lastKnownGenerators: Generator[] = [];
   private isKicking = false;
   private kickTimer = 0;
+
+  // Investigação acústica de ruído
+  public investigateTimer = 0;
+  public isSniffingSound = false;
 
   // Watchdog Anti-Stuck
   private stuckSampleTimer = 0;
@@ -177,6 +181,8 @@ export class KillerAIController implements IKillerController {
           if (this.state !== 'CHASE') {
             this.patrolManager.interruptInspection();
             this.isKicking = false;
+            this.isSniffingSound = false;
+            this.investigateTimer = 0;
             this.state = 'CHASE';
             this.currentPath = [];
             this.currentPathIndex = 0;
@@ -189,11 +195,19 @@ export class KillerAIController implements IKillerController {
         this.currentPath = [];
         this.currentPathIndex = 0;
         this.advanceToNextPatrolGenerator(generators);
+      } else if (this.state === 'PATROL' && player && player.noiseRadius && player.noiseRadius > 0) {
+        // 2. Percepção Auditiva: Capta ruído ativo do Survivor mesmo através de paredes
+        const noiseDistPixels = metersToPixels(player.noiseRadius);
+        if (distToPlayer <= noiseDistPixels) {
+          this.investigateSound(player.x, player.y);
+        }
       }
     } else {
-      // Se o survivor foi desativado enquanto estava em perseguição, aborta perseguição e retoma patrulha
-      if (this.state === 'CHASE') {
+      // Se o survivor foi desativado enquanto estava em perseguição ou investigação, aborta e retoma patrulha
+      if (this.state === 'CHASE' || this.state === 'INVESTIGATING_SOUND') {
         this.state = 'PATROL';
+        this.isSniffingSound = false;
+        this.investigateTimer = 0;
         this.currentPath = [];
         this.currentPathIndex = 0;
         this.advanceToNextPatrolGenerator(generators);
@@ -208,6 +222,8 @@ export class KillerAIController implements IKillerController {
       this.handleChaseState(delta, player, distToPlayer, settings);
     } else if (this.state === 'INSPECTING') {
       this.handleInspectingState(delta, generators);
+    } else if (this.state === 'INVESTIGATING_SOUND') {
+      this.handleInvestigatingSoundState(delta, player, generators, settings);
     } else {
       this.handlePatrolState(delta, generators, settings);
     }
@@ -522,6 +538,140 @@ export class KillerAIController implements IKillerController {
   }
 
   /**
+   * Estado INVESTIGATING_SOUND: move em direção ao ponto de ruído
+   * e, ao chegar sem avistar o Survivor, permanece farejando a área por ~2.0s antes de retomar patrulha.
+   */
+  private handleInvestigatingSoundState(
+    delta: number,
+    player: Player,
+    generators: Generator[],
+    settings: DebugSettings
+  ): void {
+    // 1. Fase de Farejamento / Inspeção local após chegar ao ponto do som
+    if (this.isSniffingSound) {
+      this.pawn.stopMovement();
+      this.pawn.stopAnimation(0);
+      this.investigateTimer -= delta;
+
+      // Movimento sutil da cabeça / varredura visual angular enquanto fareja (~0.4 rad)
+      const sweepAngle = Math.sin((2000 - this.investigateTimer) * 0.005) * 0.45;
+      this.pawn.rotateTowards(this.baseInspectAngle + sweepAngle, delta, 3);
+
+      if (this.investigateTimer <= 0) {
+        this.isSniffingSound = false;
+        this.state = 'PATROL';
+        this.advanceToNextPatrolGenerator(generators);
+      }
+      return;
+    }
+
+    // 2. Navegação em direção ao ponto do ruído
+    const distToTarget = Math.hypot(this.patrolTarget.x - this.pawn.x, this.patrolTarget.y - this.pawn.y);
+
+    // Chegou à coordenada do som (tolerância de 36px)
+    if (distToTarget <= 36) {
+      this.pawn.stopMovement();
+      this.pawn.stopAnimation(0);
+      this.isSniffingSound = true;
+      this.investigateTimer = 2000; // ~2.0s farejando a área
+      this.baseInspectAngle = this.pawn.rotation;
+      this.currentPath = [];
+      return;
+    }
+
+    const speed = metersToPixels(settings.killerSpeed);
+
+    // Linha de visão direta com folga de corpo (45px)
+    const canWalkDirectly = this.pawn.hasClearanceLineOfSight
+      ? this.pawn.hasClearanceLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, 45)
+      : this.pawn.hasLineOfSight(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y);
+
+    if (canWalkDirectly) {
+      this.currentPath = [];
+      const dx = this.patrolTarget.x - this.pawn.x;
+      const dy = this.patrolTarget.y - this.pawn.y;
+      const moveVec = normalizeVec(dx, dy);
+
+      this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
+      this.pawn.playAnimation('walk');
+
+      const targetAngle = wrapAngle(Math.atan2(dy, dx) - Math.PI / 2);
+      this.pawn.rotateTowards(targetAngle, delta, 5);
+    } else {
+      if (this.currentPath.length > 0) {
+        let targetNode = this.currentPath[this.currentPathIndex];
+        let distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+
+        if (distToNode <= 24 && this.currentPathIndex < this.currentPath.length - 1) {
+          this.currentPathIndex++;
+          targetNode = this.currentPath[this.currentPathIndex];
+          distToNode = Math.hypot(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+        }
+
+        const vCurr = normalizeVec(targetNode.x - this.pawn.x, targetNode.y - this.pawn.y);
+        let moveVec = vCurr;
+
+        // Look-Ahead Steering: interpolação vetorial suave em direção ao nó seguinte (dist < 36px)
+        if (this.currentPathIndex < this.currentPath.length - 1 && distToNode < 36) {
+          const nextNode = this.currentPath[this.currentPathIndex + 1];
+          const vNext = normalizeVec(nextNode.x - this.pawn.x, nextNode.y - this.pawn.y);
+          const blendFactor = Math.min(1, Math.max(0, (36 - distToNode) / 36)) * 0.5;
+          moveVec = normalizeVec(
+            vCurr.x * (1 - blendFactor) + vNext.x * blendFactor,
+            vCurr.y * (1 - blendFactor) + vNext.y * blendFactor
+          );
+        }
+
+        this.pawn.setVelocity(moveVec.x * speed, moveVec.y * speed);
+        this.pawn.playAnimation('walk');
+
+        const targetAngle = wrapAngle(Math.atan2(moveVec.y, moveVec.x) - Math.PI / 2);
+        this.pawn.rotateTowards(targetAngle, delta, 6);
+
+        // Se alcançou o último waypoint do caminho e está próximo do alvo
+        if (this.currentPathIndex === this.currentPath.length - 1 && distToNode <= 28) {
+          this.pawn.stopMovement();
+          this.pawn.stopAnimation(0);
+          this.isSniffingSound = true;
+          this.investigateTimer = 2000;
+          this.baseInspectAngle = this.pawn.rotation;
+          this.currentPath = [];
+        }
+      } else {
+        this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
+          this.currentPath = path;
+          this.currentPathIndex = path.length > 1 ? 1 : 0;
+        });
+      }
+    }
+  }
+
+  /**
+   * Alerta sonoro imediato: define o alvo de navegação como as coordenadas do ruído
+   * e coloca o Killer no estado 'INVESTIGATING_SOUND'.
+   */
+  public investigateSound(x: number, y: number): void {
+    if (this.state === 'DESATIVADO' || this.state === 'STANDBY' || this.state === 'CHASE') return;
+    this.patrolManager.interruptInspection();
+    this.isKicking = false;
+    this.isSniffingSound = false;
+    this.investigateTimer = 0;
+    this.state = 'INVESTIGATING_SOUND';
+    this.patrolTarget.set(x, y);
+    this.currentPath = [];
+    this.currentPathIndex = 0;
+    this.stuckSampleTimer = 0;
+    this.stuckDuration = 0;
+    this.lastSampleX = this.pawn.x;
+    this.lastSampleY = this.pawn.y;
+    this.hasInitializedSamplePos = true;
+    this.pawn.calculatePath(this.pawn.x, this.pawn.y, this.patrolTarget.x, this.patrolTarget.y, (path) => {
+      this.currentPath = path;
+      this.currentPathIndex = path.length > 1 ? 1 : 0;
+    });
+  }
+
+  /**
    * Alerta imediato de ruído (falha de Skill Check em gerador).
    */
   public alertToNoise(
@@ -578,7 +728,10 @@ export class KillerAIController implements IKillerController {
    *   b) Força advanceToNextPatrolGenerator() (em PATROL) ou novo cálculo de rota (em CHASE).
    */
   public handleWatchdogAntiStuck(delta: number, generators: Generator[]): void {
-    const isMovingState = (this.state === 'PATROL' || this.state === 'CHASE') && !this.pawn.isAttacking;
+    const isMovingState =
+      (this.state === 'PATROL' || this.state === 'CHASE' || this.state === 'INVESTIGATING_SOUND') &&
+      !this.pawn.isAttacking &&
+      !this.isSniffingSound;
     if (!isMovingState) {
       this.stuckSampleTimer = 0;
       this.stuckDuration = 0;
@@ -630,7 +783,7 @@ export class KillerAIController implements IKillerController {
           this.currentPath = [];
           this.currentPathIndex = 0;
           this.stuckDuration = 0;
-          if (this.state === 'PATROL') {
+          if (this.state === 'PATROL' || this.state === 'INVESTIGATING_SOUND') {
             this.advanceToNextPatrolGenerator(generators);
           } else if (this.state === 'CHASE') {
             this.pathRecalcTimer = 300;

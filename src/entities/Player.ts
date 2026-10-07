@@ -21,6 +21,7 @@ export class Player {
   public isSprintingInput = false;
   public inputDir = { x: 0, y: 0 };
   public isInjured = false;
+  public noiseRadius = 0; // Raio acústico de ruído emitido em metros (0 = idle, 4.0 = walk, 14.0 = run)
 
   // Trava de integridade contra penetração em paredes
   public lastSafeX = 1280;
@@ -482,6 +483,15 @@ export class Player {
     this.isSprinting = evalState.isMoving && this.isSprintingInput;
     this.currentSpeed = evalState.actualSpeed;
 
+    // Atualiza raio de emissão de ruído do Survivor
+    if (this.isMoving && this.currentSpeed > 5) {
+      this.noiseRadius = this.isSprinting
+        ? (this.settings?.runNoiseRadius ?? 14.0)
+        : (this.settings?.walkNoiseRadius ?? 4.0);
+    } else {
+      this.noiseRadius = 0;
+    }
+
     if (evalState.animState === 'idle') {
       if (this.sprite.anims.isPlaying) {
         this.sprite.anims.stop();
@@ -493,6 +503,22 @@ export class Player {
           this.sprite.anims.play(evalState.animState, true);
         }
       }
+    }
+  }
+
+  /**
+   * Emite explicitamente um sinal acústico e propaga evento de cena.
+   * @param radiusInMeters Raio de alcance do ruído em metros.
+   */
+  public emitNoise(radiusInMeters: number): void {
+    this.noiseRadius = radiusInMeters;
+    if (this.scene?.events) {
+      this.scene.events.emit('noise-emitted', {
+        x: this.sprite.x,
+        y: this.sprite.y,
+        radiusInMeters,
+        source: 'survivor'
+      });
     }
   }
 

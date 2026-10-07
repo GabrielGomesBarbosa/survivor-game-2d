@@ -303,6 +303,7 @@ describe('Killer Bot (IA Ativa) - State Transition & Offline Mode', () => {
     expect(evaluateKillerAiState('PATROL', false)).toBe('DESATIVADO');
     expect(evaluateKillerAiState('CHASE', false)).toBe('DESATIVADO');
     expect(evaluateKillerAiState('INSPECTING', false)).toBe('DESATIVADO');
+    expect(evaluateKillerAiState('INVESTIGATING_SOUND', false)).toBe('DESATIVADO');
     expect(evaluateKillerAiState('DESATIVADO', false)).toBe('DESATIVADO');
   });
 
@@ -314,12 +315,14 @@ describe('Killer Bot (IA Ativa) - State Transition & Offline Mode', () => {
     expect(evaluateKillerAiState('PATROL', true)).toBe('PATROL');
     expect(evaluateKillerAiState('CHASE', true)).toBe('CHASE');
     expect(evaluateKillerAiState('INSPECTING', true)).toBe('INSPECTING');
+    expect(evaluateKillerAiState('INVESTIGATING_SOUND', true)).toBe('INVESTIGATING_SOUND');
   });
 
   it('forces STANDBY state when activeGeneratorsCount is 0, even if killerAiEnabled is true', () => {
     expect(evaluateKillerAiState('PATROL', true, 0)).toBe('STANDBY');
     expect(evaluateKillerAiState('CHASE', true, 0)).toBe('STANDBY');
     expect(evaluateKillerAiState('INSPECTING', true, 0)).toBe('STANDBY');
+    expect(evaluateKillerAiState('INVESTIGATING_SOUND', true, 0)).toBe('STANDBY');
     expect(evaluateKillerAiState('DESATIVADO', true, 0)).toBe('STANDBY');
     expect(evaluateKillerAiState('STANDBY', true, 0)).toBe('STANDBY');
   });
@@ -1410,6 +1413,191 @@ describe('Humanoid Path Refinement - Thick Raycast, Corner Preservation & Look-A
       // E TAMBÉM componente Y positiva (iniciando antecipadamente a curva ao sul para o nó seguinte)
       expect(appliedVel.vx).toBeGreaterThan(0);
       expect(appliedVel.vy).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Stealth & Auditory Perception - Sound Detection & INVESTIGATING_SOUND', () => {
+    let pawn: any;
+    let mockGenerators: any[];
+
+    beforeEach(() => {
+      pawn = {
+        x: 1000,
+        y: 1000,
+        rotation: 0,
+        velocities: [] as Array<{ vx: number; vy: number }>,
+        setVelocity: vi.fn((vx, vy) => pawn.velocities.push({ vx, vy })),
+        stopMovement: vi.fn(),
+        rotateTowards: vi.fn(),
+        playAnimation: vi.fn(),
+        stopAnimation: vi.fn(),
+        isWalkableTile: () => true,
+        hasLineOfSight: vi.fn(() => false), // Paredes bloqueando linha direta de visão
+        hasClearanceLineOfSight: vi.fn(() => false),
+        calculatePath: vi.fn((fx, fy, tx, ty, cb) => cb([{ x: fx, y: fy }, { x: tx, y: ty }])),
+        renderVisionGraphic: vi.fn(),
+        renderRouteGraphic: vi.fn(),
+        isAttacking: false
+      };
+      mockGenerators = [
+        { name: 'Gerador A', x: 2000, y: 2000, progress: 0, isCompleted: false },
+        { name: 'Gerador B', x: 3000, y: 3000, progress: 0, isCompleted: false }
+      ];
+    });
+
+    it('transitions from PATROL to INVESTIGATING_SOUND when player runs within 14m (840px) through walls', () => {
+      const controller = new KillerAIController(pawn);
+      controller.state = 'PATROL';
+      controller.patrolTarget.set(2000, 2000);
+
+      // Survivor correndo a 600px de distância (600 <= 14 * 60 = 840px), sem linha de visão
+      const playerMock = {
+        x: 1600,
+        y: 1000,
+        isActive: true,
+        noiseRadius: 14.0, // 14 metros
+        sprite: { visible: true }
+      } as any;
+
+      controller.update(16, playerMock, mockGenerators as any, {
+        ...DEFAULT_DEBUG_SETTINGS,
+        detectionRadius: 7.5 // 450px visão (player a 600px está fora da visão direta e sem LOS)
+      });
+
+      expect(controller.state).toBe('INVESTIGATING_SOUND');
+      expect(controller.patrolTarget.x).toBe(1600);
+      expect(controller.patrolTarget.y).toBe(1000);
+      expect(pawn.calculatePath).toHaveBeenCalled();
+    });
+
+    it('does NOT detect sound when player runs beyond 14m (> 840px)', () => {
+      const controller = new KillerAIController(pawn);
+      controller.state = 'PATROL';
+      controller.patrolTarget.set(2000, 2000);
+      (controller as any).patrolManager.currentDestination = {
+        name: 'Gerador A',
+        x: 2000,
+        y: 2000,
+        type: 'generator'
+      };
+
+      // Survivor correndo a 900px de distância (900 > 840px)
+      const playerMock = {
+        x: 1900,
+        y: 1000,
+        isActive: true,
+        noiseRadius: 14.0,
+        sprite: { visible: true }
+      } as any;
+
+      controller.update(16, playerMock, mockGenerators as any, DEFAULT_DEBUG_SETTINGS);
+
+      expect(controller.state).toBe('PATROL');
+      expect(controller.patrolTarget.x).toBe(2000);
+    });
+
+    it('transitions to INVESTIGATING_SOUND when player walks within 4m (240px) through walls', () => {
+      const controller = new KillerAIController(pawn);
+      controller.state = 'PATROL';
+      controller.patrolTarget.set(2000, 2000);
+
+      // Survivor caminhando a 200px de distância (200 <= 4 * 60 = 240px), sem LOS
+      const playerMock = {
+        x: 1200,
+        y: 1000,
+        isActive: true,
+        noiseRadius: 4.0, // 4 metros
+        sprite: { visible: true }
+      } as any;
+
+      controller.update(16, playerMock, mockGenerators as any, {
+        ...DEFAULT_DEBUG_SETTINGS,
+        detectionRadius: 2.5 // 150px visão (player a 200px está fora do cone de visão)
+      });
+
+      expect(controller.state).toBe('INVESTIGATING_SOUND');
+      expect(controller.patrolTarget.x).toBe(1200);
+      expect(controller.patrolTarget.y).toBe(1000);
+    });
+
+    it('ignores player movement noise when player is idle (noiseRadius = 0)', () => {
+      const controller = new KillerAIController(pawn);
+      controller.state = 'PATROL';
+      controller.patrolTarget.set(2000, 2000);
+
+      // Survivor parado a 150px de distância mas sem linha de visão
+      const playerMock = {
+        x: 1150,
+        y: 1000,
+        isActive: true,
+        noiseRadius: 0,
+        sprite: { visible: true }
+      } as any;
+
+      controller.update(16, playerMock, mockGenerators as any, {
+        ...DEFAULT_DEBUG_SETTINGS,
+        detectionRadius: 2.0 // 120px visão
+      });
+
+      expect(controller.state).toBe('PATROL');
+    });
+
+    it('transitions from INVESTIGATING_SOUND to CHASE immediately when line of sight is acquired within detection radius', () => {
+      const controller = new KillerAIController(pawn);
+      controller.state = 'INVESTIGATING_SOUND';
+      controller.patrolTarget.set(1300, 1000);
+
+      // Survivor a 300px (dentro dos 450px de detecção) E agora com linha de visão aberta (hasLOS = true)
+      pawn.hasLineOfSight = vi.fn(() => true);
+
+      const playerMock = {
+        x: 1300,
+        y: 1000,
+        isActive: true,
+        noiseRadius: 0,
+        sprite: { visible: true }
+      } as any;
+
+      controller.update(16, playerMock, mockGenerators as any, {
+        ...DEFAULT_DEBUG_SETTINGS,
+        detectionRadius: 7.5 // 450px
+      });
+
+      expect(controller.state).toBe('CHASE');
+    });
+
+    it('triggers ~2.0s sniffing phase upon reaching sound coordinate (dist <= 36px) and resumes PATROL when timer expires', () => {
+      const controller = new KillerAIController(pawn);
+      controller.state = 'INVESTIGATING_SOUND';
+      // Posiciona o alvo exatamente a 20px de distância do Killer (1020, 1000 vs 1000, 1000)
+      controller.patrolTarget.set(1020, 1000);
+
+      const playerMock = {
+        x: 9999,
+        y: 9999,
+        isActive: true,
+        noiseRadius: 0,
+        sprite: { visible: true }
+      } as any;
+
+      // 1. Killer chega ao ponto do som
+      controller.update(16, playerMock, mockGenerators as any, DEFAULT_DEBUG_SETTINGS);
+
+      expect(controller.state).toBe('INVESTIGATING_SOUND');
+      expect(controller.isSniffingSound).toBe(true);
+      expect(controller.investigateTimer).toBe(2000);
+      expect(pawn.stopMovement).toHaveBeenCalled();
+
+      // 2. Passam 1000ms: ainda farejando a área
+      controller.update(1000, playerMock, mockGenerators as any, DEFAULT_DEBUG_SETTINGS);
+      expect(controller.state).toBe('INVESTIGATING_SOUND');
+      expect(controller.isSniffingSound).toBe(true);
+      expect(controller.investigateTimer).toBe(1000);
+
+      // 3. Passam mais 1000ms: conclui farejamento e retoma PATROL
+      controller.update(1000, playerMock, mockGenerators as any, DEFAULT_DEBUG_SETTINGS);
+      expect(controller.state).toBe('PATROL');
+      expect(controller.isSniffingSound).toBe(false);
     });
   });
 });

@@ -31,6 +31,7 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
       scaleY: 1,
       alpha: 0,
       depth: 0,
+      visible: true,
       scrollFactorX: 0,
       scrollFactorY: 0,
       children: [] as any[],
@@ -39,6 +40,7 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
       setAlpha: vi.fn(function(this: any, a: number) { this.alpha = a; return this; }),
       setScale: vi.fn(function(this: any, s: number) { this.scaleX = s; this.scaleY = s; return this; }),
       setPosition: vi.fn(function(this: any, x: number, y: number) { this.x = x; this.y = y; return this; }),
+      setVisible: vi.fn(function(this: any, v: boolean) { this.visible = v; return this; }),
       add: vi.fn(function(this: any, items: any[]) { this.children.push(...items); return this; }),
       destroy: vi.fn()
     };
@@ -55,10 +57,17 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
     };
 
     alertContainerMock = {
-      setScrollFactor: vi.fn().mockReturnThis(),
-      setDepth: vi.fn().mockReturnThis(),
-      setAlpha: vi.fn().mockReturnThis(),
-      add: vi.fn().mockReturnThis(),
+      x: 0,
+      y: 0,
+      alpha: 0,
+      depth: 0,
+      visible: true,
+      children: [] as any[],
+      setScrollFactor: vi.fn(function(this: any) { return this; }),
+      setDepth: vi.fn(function(this: any, d: number) { this.depth = d; return this; }),
+      setAlpha: vi.fn(function(this: any, a: number) { this.alpha = a; return this; }),
+      setVisible: vi.fn(function(this: any, v: boolean) { this.visible = v; return this; }),
+      add: vi.fn(function(this: any, items: any[]) { this.children.push(...items); return this; }),
       destroy: vi.fn()
     };
 
@@ -89,7 +98,11 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
       add: {
         container: vi.fn((x: number, y: number) => {
           containerCount++;
-          if (containerCount === 1) return alertContainerMock;
+          if (containerCount % 2 === 1) {
+            alertContainerMock.x = x;
+            alertContainerMock.y = y;
+            return alertContainerMock;
+          }
           heartContainerMock.x = x;
           heartContainerMock.y = y;
           return heartContainerMock;
@@ -105,7 +118,8 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
         })),
         rectangle: vi.fn(() => ({
           setStrokeStyle: vi.fn().mockReturnThis(),
-          setFillStyle: vi.fn().mockReturnThis()
+          setFillStyle: vi.fn().mockReturnThis(),
+          setOrigin: vi.fn().mockReturnThis()
         }))
       },
       tweens: {
@@ -148,27 +162,27 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
     });
   });
 
-  describe('2. Visibilidade e Limiar de 800px (TERROR_RADIUS_MAX)', () => {
-    it('remains hidden (alpha = 0) and not beating when distance >= 800px', () => {
+  describe('2. Visibilidade e Limiar de 1920px (TERROR_RADIUS_MAX)', () => {
+    it('remains hidden (alpha = 0) and not beating when distance >= 1920px', () => {
       const hud = new TelemetryHUD(mockScene);
-      hud.updateHeartbeatVisual(850, false, true);
+      hud.updateHeartbeatVisual(1950, false, true);
 
       expect(hud.heartbeatContainer.alpha).toBe(0);
       expect(hud.isHeartbeatBeating).toBe(false);
       expect(hud.screenVignette.alpha).toBe(0);
     });
 
-    it('remains hidden at exact boundary distance = 800.1px', () => {
+    it('remains hidden at exact boundary distance = 1920.1px', () => {
       const hud = new TelemetryHUD(mockScene);
-      hud.updateHeartbeatVisual(800.1, false, true);
+      hud.updateHeartbeatVisual(1920.1, false, true);
 
       expect(hud.heartbeatContainer.alpha).toBe(0);
       expect(hud.isHeartbeatBeating).toBe(false);
     });
 
-    it('becomes visible when distance < 800px (e.g. 714px and 450px)', () => {
+    it('becomes visible when distance < 1920px (e.g. 1500px and 450px)', () => {
       const hud = new TelemetryHUD(mockScene);
-      hud.updateHeartbeatVisual(714, false, true);
+      hud.updateHeartbeatVisual(1500, false, true);
 
       expect(hud.heartbeatContainer.alpha).toBeGreaterThan(0);
       expect(hud.isHeartbeatBeating).toBe(true);
@@ -182,17 +196,14 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
   });
 
   describe('3. Modulação de Opacidade e Escala', () => {
-    it('calculates base alpha: ~0.25 at 800px up to 1.0 at 0px (and ~0.33 at 714px)', () => {
+    it('calculates base alpha: ~0.25 at 1920px up to 1.0 at 0px', () => {
       const hud = new TelemetryHUD(mockScene);
 
-      hud.updateHeartbeatVisual(799, false, true);
+      hud.updateHeartbeatVisual(1919, false, true);
       expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.25, 2);
 
-      hud.updateHeartbeatVisual(714, false, true);
-      expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.33, 2);
-
-      hud.updateHeartbeatVisual(400, false, true);
-      // factor = 1 - (400/800) = 0.5 -> 0.25 + 0.75 * 0.5 = 0.625
+      hud.updateHeartbeatVisual(960, false, true);
+      // factor = 1 - (960/1920) = 0.5 -> 0.25 + 0.75 * 0.5 = 0.625
       expect(hud.heartbeatBaseAlpha).toBeCloseTo(0.625, 2);
 
       hud.updateHeartbeatVisual(0, false, true);
@@ -358,6 +369,117 @@ describe('TelemetryHUD - Terror Radius Heartbeat Visual & Vignette', () => {
 
       // 240px / 60 = 4.0m
       expect(mockElements['hud-killer-dist'].textContent).toBe('4.0m');
+    });
+  });
+
+  describe('9. Legenda de Raios & Percepção (Camada HTML/DOM)', () => {
+    let mockLegendEl: any;
+    let mockVisionEl: any;
+    const originalDocument = globalThis.document;
+
+    beforeEach(() => {
+      mockLegendEl = { style: { display: 'none' }, textContent: '' };
+      mockVisionEl = { textContent: '' };
+
+      globalThis.document = {
+        getElementById: vi.fn((id: string) => {
+          if (id === 'hud-radius-legend') return mockLegendEl;
+          if (id === 'legend-vision-dist') return mockVisionEl;
+          return null;
+        })
+      } as any;
+    });
+
+    afterEach(() => {
+      globalThis.document = originalDocument;
+    });
+
+    it('binds to DOM element #hud-radius-legend', () => {
+      const hud = new TelemetryHUD(mockScene);
+      expect(hud.radiusLegend).toBe(mockLegendEl);
+    });
+
+    it('toggles display according to showRadiusLegend and active debug settings', () => {
+      const hud = new TelemetryHUD(mockScene);
+
+      // Default: showRadiusLegend=true, showKillerVision=false, showPhysicsDebug=false -> visible false
+      hud.updateRadiusLegend({
+        showRadiusLegend: true,
+        showKillerVision: false,
+        showPhysicsDebug: false,
+        detectionRadius: 7.3
+      } as any);
+      expect(mockLegendEl.style.display).toBe('none');
+
+      // Com showKillerVision = true
+      hud.updateRadiusLegend({
+        showRadiusLegend: true,
+        showKillerVision: true,
+        showPhysicsDebug: false,
+        detectionRadius: 7.3
+      } as any);
+      expect(mockLegendEl.style.display).toBe('flex');
+      expect(mockVisionEl.textContent).toBe('7.3m');
+
+      // Com showPhysicsDebug = true
+      hud.updateRadiusLegend({
+        showRadiusLegend: true,
+        showKillerVision: false,
+        showPhysicsDebug: true,
+        detectionRadius: 7.3
+      } as any);
+      expect(mockLegendEl.style.display).toBe('flex');
+
+      // Com showRadiusLegend = false (toggle desativado)
+      hud.updateRadiusLegend({
+        showRadiusLegend: false,
+        showKillerVision: true,
+        showPhysicsDebug: true,
+        detectionRadius: 7.3
+      } as any);
+      expect(mockLegendEl.style.display).toBe('none');
+    });
+
+    it('hides DOM legend element on destroy', () => {
+      const hud = new TelemetryHUD(mockScene);
+      mockLegendEl.style.display = 'flex';
+      hud.destroy();
+      expect(mockLegendEl.style.display).toBe('none');
+    });
+  });
+
+  describe('10. Prompt de Desbloqueio de Áudio (Autoplay Policy)', () => {
+    let mockAudioPromptEl: any;
+    const originalDocument = globalThis.document;
+
+    beforeEach(() => {
+      mockAudioPromptEl = {
+        classList: {
+          add: vi.fn(),
+          remove: vi.fn()
+        }
+      };
+
+      globalThis.document = {
+        getElementById: vi.fn((id: string) => {
+          if (id === 'hud-audio-prompt') return mockAudioPromptEl;
+          return null;
+        })
+      } as any;
+    });
+
+    afterEach(() => {
+      globalThis.document = originalDocument;
+    });
+
+    it('toggles hidden class on audio prompt via setAudioPromptVisible', () => {
+      const hud = new TelemetryHUD(mockScene);
+
+      hud.setAudioPromptVisible(true);
+      expect(mockAudioPromptEl.classList.remove).toHaveBeenCalledWith('hidden');
+
+      hud.setAudioPromptVisible(false);
+      expect(mockAudioPromptEl.classList.add).toHaveBeenCalledWith('hidden');
     });
   });
 });

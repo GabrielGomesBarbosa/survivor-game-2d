@@ -11,7 +11,35 @@
  */
 
 import { TERROR_RADIUS_MAX } from '../config/constants';
+import { metersToPixels } from '../utils/gameLogic';
 export { TERROR_RADIUS_MAX };
+
+/**
+ * Raio auditivo máximo para o som de motor danificado / regredindo: 10 metros (600px).
+ */
+export const GENERATOR_AUDIO_MAX_DIST = metersToPixels(10.0);
+
+/**
+ * Raio de volume total para o som de motor danificado / regredindo: 1.5 metros (90px).
+ */
+export const GENERATOR_AUDIO_MIN_DIST = metersToPixels(1.5);
+
+/**
+ * Calcula o fator de volume (0.0 a 1.0) do áudio espacial de gerador regredindo com base na distância.
+ * - dist >= GENERATOR_AUDIO_MAX_DIST (600px): volume = 0 (silêncio total)
+ * - dist <= GENERATOR_AUDIO_MIN_DIST (90px): volume = 1.0 (volume nominal)
+ * - intervalo [90px, 600px]: atenuação linear decrescente
+ * @param dist Distância euclidiana em pixels até o gerador mais próximo
+ */
+export function calculateDamagedGeneratorAudioVolume(dist: number): number {
+  if (!isFinite(dist) || dist >= GENERATOR_AUDIO_MAX_DIST) {
+    return 0;
+  }
+  if (dist <= GENERATOR_AUDIO_MIN_DIST) {
+    return 1.0;
+  }
+  return 1.0 - ((dist - GENERATOR_AUDIO_MIN_DIST) / (GENERATOR_AUDIO_MAX_DIST - GENERATOR_AUDIO_MIN_DIST));
+}
 
 /**
  * Calcula a cadência e intensidade do batimento cardíaco (Camada 1) a partir da distância até o Killer.
@@ -26,14 +54,14 @@ export function calculateTerrorCadence(distanceToKiller: number): {
   if (distanceToKiller >= TERROR_RADIUS_MAX) {
     return { intervalMs: 1100, volume: 0, active: false };
   }
-  const minThreshold = 100;
-  const maxThreshold = TERROR_RADIUS_MAX;
+  const minThreshold = 300; // < 5 metros (300px)
+  const maxThreshold = TERROR_RADIUS_MAX; // 32 metros (1920px)
   const clamped = Math.max(minThreshold, Math.min(maxThreshold, distanceToKiller));
-  const t = (clamped - minThreshold) / (maxThreshold - minThreshold); // 0 (<= 100px) a 1 (800px)
+  const t = (clamped - minThreshold) / (maxThreshold - minThreshold); // 0 (<= 300px) a 1 (1920px)
 
-  // 800px: ~55 BPM (intervalo de 1100ms) | 100px: ~150 BPM (intervalo de 400ms)
+  // 1920px (32m): ~55 BPM (intervalo de 1100ms) | <= 300px (< 5m): ~150 BPM (intervalo de 400ms)
   const intervalMs = 400 + t * (1100 - 400);
-  // Volume proporcional: ganho suave de 0.08 no limiar de 800px até 0.45 em proximidade imediata
+  // Volume proporcional: ganho suave de 0.08 no limiar de 1920px até 0.45 em proximidade imediata (< 5m)
   const volume = 0.45 - t * (0.45 - 0.08);
 
   return { intervalMs, volume, active: true };
@@ -53,26 +81,36 @@ export function calculateTerrorDrone(
   cutoffHz: number;
   volume: number;
 } {
-  if (!isChase && distanceToKiller >= 250) {
-    return { active: false, cutoffHz: 200, volume: 0 };
+  if (distanceToKiller >= TERROR_RADIUS_MAX) {
+    return { active: false, cutoffHz: 180, volume: 0 };
   }
 
   if (isChase) {
-    // Durante perseguição ativa, máxima agressividade e corte mais aberto
-    const clampedDist = Math.max(40, Math.min(500, distanceToKiller));
-    const t = (clampedDist - 40) / 460;
+    // Durante perseguição ativa, presença agressiva estendida para todo o raio ativo
+    const clampedDist = Math.max(40, Math.min(TERROR_RADIUS_MAX, distanceToKiller));
+    const t = (clampedDist - 40) / (TERROR_RADIUS_MAX - 40);
     const cutoffHz = 1200 - t * 350; // 850Hz a 1200Hz
     const volume = 0.28 - t * 0.08;  // 0.20 a 0.28
     return { active: true, cutoffHz, volume };
   }
 
-  // Distância < 250px fora de perseguição
-  const clampedDist = Math.max(40, Math.min(250, distanceToKiller));
-  const t = (clampedDist - 40) / (250 - 40); // 0 (40px) a 1 (250px)
-  // O corte (cutoff) abre progressivamente conforme o Killer cola no Survivor (220Hz -> 900Hz)
-  const cutoffHz = 900 - t * (900 - 220);
-  const volume = 0.25 - t * (0.25 - 0.08);
+  // Abaixo de 120px (< 2m): Corte aberto a 950Hz e volume 0.26 (máxima agressividade)
+  if (distanceToKiller < 120) {
+    return { active: true, cutoffHz: 950, volume: 0.26 };
+  }
 
+  // Entre 600px e 120px (10m a 2m): Filtro abrindo progressivamente de 320Hz até 750Hz com ganho subindo para 0.20
+  if (distanceToKiller < 600) {
+    const t = (distanceToKiller - 120) / (600 - 120); // 0 (120px) a 1 (600px)
+    const cutoffHz = 750 - t * (750 - 320);          // 750Hz -> 320Hz
+    const volume = 0.20 - t * (0.20 - 0.12);         // 0.20 -> 0.12
+    return { active: true, cutoffHz, volume };
+  }
+
+  // Entre 1920px e 600px (32m a 10m): Drone sutil com filtro fechado entre 180Hz e 320Hz e ganho proporcional (0.05 a 0.12)
+  const t = (distanceToKiller - 600) / (TERROR_RADIUS_MAX - 600); // 0 (600px) a 1 (1920px)
+  const cutoffHz = 320 - t * (320 - 180);                         // 320Hz -> 180Hz
+  const volume = 0.12 - t * (0.12 - 0.05);                        // 0.12 -> 0.05
   return { active: true, cutoffHz, volume };
 }
 
@@ -105,9 +143,17 @@ export class AudioManager {
   private droneGainNode: GainNode | null = null;
   private droneFadeTimeout: any = null;
 
-  // Efeito de Chute e Regressão de Geradores (Faíscas Estocásticas)
+  // Efeito de Chute e Regressão de Geradores (Faíscas Estocásticas e Motor Danificado)
   private regressingGenerators: Set<string> = new Set();
   private sparkIntervalTimer: any = null;
+  private damagedGeneratorGainNode: GainNode | null = null;
+  private damagedMotorOscillator: OscillatorNode | null = null;
+  private damagedMotorLfo: OscillatorNode | null = null;
+  private currentDamagedGeneratorDist: number = Infinity;
+  private currentDamagedGeneratorVolume: number = 0;
+  private isDamagedAudioPlaying: boolean = false;
+
+  private onUnlockCallbacks: (() => void)[] = [];
 
   private constructor() {
     this.setupAudioUnlock();
@@ -124,19 +170,43 @@ export class AudioManager {
   }
 
   /**
-   * Configura o desbloqueio seguro do AudioContext no primeiro gesto do usuário (clique ou tecla).
+   * Registra um callback executado quando o AudioContext transiciona para o estado 'running'.
+   * Caso o contexto já esteja ativo, o callback é invocado imediatamente.
+   * @returns Função para cancelar a inscrição do callback
+   */
+  public onAudioUnlocked(cb: () => void): () => void {
+    this.onUnlockCallbacks.push(cb);
+    if (this.isContextRunning()) {
+      try {
+        cb();
+      } catch (_) {}
+    }
+    return () => {
+      this.onUnlockCallbacks = this.onUnlockCallbacks.filter((c) => c !== cb);
+    };
+  }
+
+  /**
+   * Informa se o AudioContext está inicializado e em execução ('running').
+   */
+  public isContextRunning(): boolean {
+    return Boolean(this.ctx && this.ctx.state === 'running');
+  }
+
+  /**
+   * Configura o desbloqueio seguro do AudioContext nos primeiros gestos do usuário (clique, toque ou tecla).
    */
   private setupAudioUnlock(): void {
     if (typeof window === 'undefined') return;
 
     const unlock = () => {
       this.resumeContext();
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
     };
 
-    window.addEventListener('pointerdown', unlock, { once: true });
-    window.addEventListener('keydown', unlock, { once: true });
+    const events = ['pointerdown', 'keydown', 'mousedown', 'touchstart', 'click'];
+    events.forEach((evt) => {
+      window.addEventListener(evt, unlock, { passive: true });
+    });
   }
 
   /**
@@ -163,13 +233,31 @@ export class AudioManager {
   }
 
   /**
+   * Assegura que o AudioContext está inicializado e em execução ('running').
+   * Dispara resume() de forma idempotente e segura caso esteja 'suspended'.
+   */
+  public ensureContextRunning(): Promise<void> {
+    const ctx = this.getContext();
+    if (ctx && ctx.state === 'suspended') {
+      return ctx.resume().then(() => {
+        this.onUnlockCallbacks.forEach((cb) => {
+          try { cb(); } catch (_) {}
+        });
+      }).catch(() => {});
+    }
+    if (ctx && ctx.state === 'running') {
+      this.onUnlockCallbacks.forEach((cb) => {
+        try { cb(); } catch (_) {}
+      });
+    }
+    return Promise.resolve();
+  }
+
+  /**
    * Força a retomada do AudioContext caso esteja em estado 'suspended'.
    */
   public resumeContext(): void {
-    const ctx = this.getContext();
-    if (ctx && ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
+    this.ensureContextRunning();
   }
 
   /**
@@ -196,6 +284,10 @@ export class AudioManager {
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setValueAtTime(this.volume, this.ctx.currentTime);
     }
+    if (this.damagedGeneratorGainNode && this.ctx) {
+      const targetGain = Math.max(0.0001, this.currentDamagedGeneratorVolume * 0.40 * this.volume);
+      this.damagedGeneratorGainNode.gain.setValueAtTime(targetGain, this.ctx.currentTime);
+    }
   }
 
   public getMasterVolume(): number {
@@ -219,7 +311,7 @@ export class AudioManager {
   }
 
   // =========================================================================
-  // 1. PASSOS DO SURVIVOR (Pulso de ~60ms de ruído filtrado com pitch médio/baixo)
+  // 1. PASSOS DO SURVIVOR (Estalo mecânico nítido com filtro passa-faixa e pulso tonal)
   // =========================================================================
   public playSurvivorFootstep(isRunning: boolean = false): void {
     if (!this.enabled) return;
@@ -228,9 +320,9 @@ export class AudioManager {
 
     try {
       const now = ctx.currentTime;
-      const duration = 0.06; // ~60ms
+      const duration = 0.08; // ~80ms
 
-      // Ruído filtrado
+      // Ruído filtrado: passa-faixa centrado em 980Hz-1250Hz (Q = 1.9) para estalo nítido de contato sola/chão
       const noiseBuffer = this.getNoiseBuffer(ctx);
       const noise = ctx.createBufferSource();
       noise.buffer = noiseBuffer;
@@ -238,12 +330,13 @@ export class AudioManager {
 
       const filter = ctx.createBiquadFilter();
       filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(isRunning ? 380 : 280, now);
-      filter.Q.setValueAtTime(1.4, now);
+      filter.frequency.setValueAtTime(isRunning ? 1250 : 980, now);
+      filter.Q.setValueAtTime(1.9, now);
 
       const noiseGain = ctx.createGain();
-      const nVol = isRunning ? 0.20 : 0.14;
-      noiseGain.gain.setValueAtTime(nVol, now);
+      const nVol = isRunning ? 0.28 : 0.24;
+      noiseGain.gain.setValueAtTime(0.001, now);
+      noiseGain.gain.linearRampToValueAtTime(nVol, now + 0.006);
       noiseGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
       noise.connect(filter);
@@ -254,10 +347,11 @@ export class AudioManager {
       const osc = ctx.createOscillator();
       const oscGain = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(isRunning ? 90 : 75, now);
-      osc.frequency.exponentialRampToValueAtTime(36, now + duration);
+      osc.frequency.setValueAtTime(isRunning ? 110 : 90, now);
+      osc.frequency.exponentialRampToValueAtTime(45, now + duration);
 
-      oscGain.gain.setValueAtTime(isRunning ? 0.16 : 0.11, now);
+      oscGain.gain.setValueAtTime(0.001, now);
+      oscGain.gain.linearRampToValueAtTime(isRunning ? 0.20 : 0.16, now + 0.006);
       oscGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
       osc.connect(oscGain);
@@ -271,7 +365,7 @@ export class AudioManager {
   }
 
   // =========================================================================
-  // 2. PASSOS DO KILLER (Filtro ressonante passa-baixo mais pesado e impacto grave com reverb)
+  // 2. PASSOS DO KILLER (Filtro duplo lowpass 450Hz + pico 650Hz e impacto grave com reverb)
   // =========================================================================
   public playKillerFootstep(volumeScale: number = 1): void {
     if (!this.enabled || volumeScale <= 0) return;
@@ -280,37 +374,47 @@ export class AudioManager {
 
     try {
       const now = ctx.currentTime;
-      const duration = 0.085; // ~85ms
+      const duration = 0.095; // ~95ms
 
-      // 1. Ruído grave com filtro ressonante passa-baixo (lowpass com Q elevado = impacto oco de bota pesada)
+      // 1. Ruído de impacto com filtro duplo: lowpass em 450Hz e pico ressonante em 650Hz
       const noiseBuffer = this.getNoiseBuffer(ctx);
       const noise = ctx.createBufferSource();
       noise.buffer = noiseBuffer;
       noise.loop = true;
 
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(140, now);
-      filter.Q.setValueAtTime(3.8, now);
+      const lowpassFilter = ctx.createBiquadFilter();
+      lowpassFilter.type = 'lowpass';
+      lowpassFilter.frequency.setValueAtTime(450, now);
+      lowpassFilter.Q.setValueAtTime(2.0, now);
+
+      const peakFilter = ctx.createBiquadFilter();
+      peakFilter.type = 'peaking';
+      peakFilter.frequency.setValueAtTime(650, now);
+      if (peakFilter.gain?.setValueAtTime) {
+        peakFilter.gain.setValueAtTime(6, now);
+      }
 
       const noiseGain = ctx.createGain();
-      const nVol = 0.32 * Math.min(1, volumeScale);
-      noiseGain.gain.setValueAtTime(nVol, now);
+      const nVol = 0.38 * Math.min(1, volumeScale);
+      noiseGain.gain.setValueAtTime(0.001, now);
+      noiseGain.gain.linearRampToValueAtTime(nVol, now + 0.008);
       noiseGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
-      noise.connect(filter);
-      filter.connect(noiseGain);
+      noise.connect(lowpassFilter);
+      lowpassFilter.connect(peakFilter);
+      peakFilter.connect(noiseGain);
       noiseGain.connect(this.masterGain);
 
-      // 2. Impacto pesado sub-grave (queda de 95Hz para 24Hz)
+      // 2. Impacto pesado sub-grave audível (queda de 115Hz para 35Hz)
       const osc = ctx.createOscillator();
       const oscGain = ctx.createGain();
       osc.type = 'triangle';
-      osc.frequency.setValueAtTime(95, now);
-      osc.frequency.exponentialRampToValueAtTime(24, now + duration);
+      osc.frequency.setValueAtTime(115, now);
+      osc.frequency.exponentialRampToValueAtTime(35, now + duration);
 
-      const oVol = 0.40 * Math.min(1, volumeScale);
-      oscGain.gain.setValueAtTime(oVol, now);
+      const oVol = 0.42 * Math.min(1, volumeScale);
+      oscGain.gain.setValueAtTime(0.001, now);
+      oscGain.gain.linearRampToValueAtTime(oVol, now + 0.008);
       oscGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
       osc.connect(oscGain);
@@ -320,11 +424,12 @@ export class AudioManager {
       const rumbleOsc = ctx.createOscillator();
       const rumbleGain = ctx.createGain();
       rumbleOsc.type = 'sine';
-      rumbleOsc.frequency.setValueAtTime(44, now);
-      rumbleOsc.frequency.exponentialRampToValueAtTime(22, now + 0.11);
+      rumbleOsc.frequency.setValueAtTime(55, now);
+      rumbleOsc.frequency.exponentialRampToValueAtTime(28, now + 0.11);
 
-      const rVol = 0.18 * Math.min(1, volumeScale);
-      rumbleGain.gain.setValueAtTime(rVol, now);
+      const rVol = 0.22 * Math.min(1, volumeScale);
+      rumbleGain.gain.setValueAtTime(0.001, now);
+      rumbleGain.gain.linearRampToValueAtTime(rVol, now + 0.01);
       rumbleGain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
 
       rumbleOsc.connect(rumbleGain);
@@ -509,6 +614,11 @@ export class AudioManager {
       return;
     }
 
+    const ctx = this.getContext();
+    if (!ctx) {
+      return;
+    }
+
     // -------------------------------------------------------------
     // Camada 1: Batimento Cardíaco Reativo (< TERROR_RADIUS_MAX)
     // -------------------------------------------------------------
@@ -527,7 +637,7 @@ export class AudioManager {
     }
 
     // -------------------------------------------------------------
-    // Camada 2: Drone Metálico e Dissonante (< 250px ou CHASE)
+    // Camada 2: Drone Metálico e Dissonante (até 1920px ou CHASE)
     // -------------------------------------------------------------
     const droneParams = calculateTerrorDrone(distanceToKiller, isChase);
     this.updateDroneLayer(droneParams);
@@ -657,7 +767,7 @@ export class AudioManager {
   }
 
   /**
-   * Sintetiza o clássico par de batimentos cardíacos ("lub-dub" a 55Hz e 50Hz com envelope suave).
+   * Sintetiza o clássico par de batimentos cardíacos ("lub-dub" a 55Hz/50Hz + harmônicos médios a 110Hz/100Hz).
    * @param volume Volume modulado pela proximidade.
    */
   private playHeartbeatPair(volume: number): void {
@@ -667,7 +777,8 @@ export class AudioManager {
     try {
       const now = ctx.currentTime;
 
-      // 1. Batimento "LUB" (primeiro pulso grave senoidal a 55Hz descendo suavemente para 45Hz)
+      // 1. Batimento "LUB"
+      // 1.1 Fundamental sub-grave senoidal a 55Hz descendo para 45Hz
       const lubOsc = ctx.createOscillator();
       const lubGain = ctx.createGain();
       lubOsc.type = 'sine';
@@ -684,8 +795,27 @@ export class AudioManager {
       lubOsc.start(now);
       lubOsc.stop(now + 0.085);
 
-      // 2. Batimento "DUB" (segundo pulso grave senoidal a 50Hz descendo para 40Hz ~130ms depois)
+      // 1.2 Harmônico de médios-graves (triangular a 110Hz descendo para 90Hz) para audibilidade em alto-falantes comuns
+      const lubHarmOsc = ctx.createOscillator();
+      const lubHarmGain = ctx.createGain();
+      lubHarmOsc.type = 'triangle';
+      lubHarmOsc.frequency.setValueAtTime(110, now);
+      lubHarmOsc.frequency.exponentialRampToValueAtTime(90, now + 0.085);
+
+      lubHarmGain.gain.setValueAtTime(0.001, now);
+      lubHarmGain.gain.linearRampToValueAtTime(volume * 0.20, now + 0.01);
+      lubHarmGain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+
+      lubHarmOsc.connect(lubHarmGain);
+      lubHarmGain.connect(this.masterGain);
+
+      lubHarmOsc.start(now);
+      lubHarmOsc.stop(now + 0.085);
+
+      // 2. Batimento "DUB" (~130ms depois)
       const dubTime = now + 0.130;
+
+      // 2.1 Fundamental sub-grave senoidal a 50Hz descendo para 40Hz
       const dubOsc = ctx.createOscillator();
       const dubGain = ctx.createGain();
       dubOsc.type = 'sine';
@@ -701,6 +831,23 @@ export class AudioManager {
 
       dubOsc.start(dubTime);
       dubOsc.stop(dubTime + 0.075);
+
+      // 2.2 Harmônico de médios-graves (triangular a 100Hz descendo para 80Hz)
+      const dubHarmOsc = ctx.createOscillator();
+      const dubHarmGain = ctx.createGain();
+      dubHarmOsc.type = 'triangle';
+      dubHarmOsc.frequency.setValueAtTime(100, dubTime);
+      dubHarmOsc.frequency.exponentialRampToValueAtTime(80, dubTime + 0.075);
+
+      dubHarmGain.gain.setValueAtTime(0.001, dubTime);
+      dubHarmGain.gain.linearRampToValueAtTime(volume * 0.16, dubTime + 0.01);
+      dubHarmGain.gain.exponentialRampToValueAtTime(0.001, dubTime + 0.075);
+
+      dubHarmOsc.connect(dubHarmGain);
+      dubHarmGain.connect(this.masterGain);
+
+      dubHarmOsc.start(dubTime);
+      dubHarmOsc.stop(dubTime + 0.075);
     } catch (_) {}
   }
 
@@ -770,18 +917,110 @@ export class AudioManager {
   }
 
   /**
-   * Registra um gerador em regressão e inicia o loop de estalos elétricos estocásticos.
-   * @param genId Identificador do gerador
+   * Obtém ou inicializa o nó de ganho espacial dedicado ao áudio de gerador danificado / faíscas.
    */
-  public startGeneratorSparkingSound(genId: string): void {
-    this.regressingGenerators.add(genId);
-    if (!this.sparkIntervalTimer && this.enabled) {
-      this.scheduleNextSpark();
+  private getDamagedGainNode(ctx: AudioContext): GainNode {
+    if (!this.damagedGeneratorGainNode) {
+      this.damagedGeneratorGainNode = ctx.createGain();
+      const initialGain = Math.max(0.0001, this.currentDamagedGeneratorVolume * 0.40 * this.volume);
+      this.damagedGeneratorGainNode.gain.setValueAtTime(initialGain, ctx.currentTime);
+      if (this.masterGain) {
+        this.damagedGeneratorGainNode.connect(this.masterGain);
+      }
+    }
+    return this.damagedGeneratorGainNode;
+  }
+
+  /**
+   * Inicia o oscilador contínuo de motor danificado (combina onda grave a 58Hz e sputter metálico).
+   */
+  public startDamagedMotorLoop(): void {
+    if (!this.enabled || this.isDamagedAudioPlaying) return;
+    const ctx = this.getContext();
+    if (!ctx || !this.masterGain) return;
+
+    try {
+      this.isDamagedAudioPlaying = true;
+      const now = ctx.currentTime;
+      const damagedBus = this.getDamagedGainNode(ctx);
+
+      // Oscilador grave de motor engasgando (dente de serra a 58Hz)
+      this.damagedMotorOscillator = ctx.createOscillator();
+      this.damagedMotorOscillator.type = 'sawtooth';
+      this.damagedMotorOscillator.frequency.setValueAtTime(58, now);
+
+      // Filtro bandpass simulando ressonância na carcaça de metal do gerador
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(260, now);
+      filter.Q.setValueAtTime(2.2, now);
+
+      // LFO irregular modulador para simular falhas e engasgos no motor (~8.5Hz)
+      this.damagedMotorLfo = ctx.createOscillator();
+      this.damagedMotorLfo.type = 'sawtooth';
+      this.damagedMotorLfo.frequency.setValueAtTime(8.5, now);
+
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.setValueAtTime(0.06, now);
+
+      const oscGain = ctx.createGain();
+      oscGain.gain.setValueAtTime(0.18, now);
+
+      this.damagedMotorLfo.connect(lfoGain);
+      lfoGain.connect(oscGain.gain);
+
+      this.damagedMotorOscillator.connect(filter);
+      filter.connect(oscGain);
+      oscGain.connect(damagedBus);
+
+      this.damagedMotorOscillator.start(now);
+      this.damagedMotorLfo.start(now);
+    } catch (_) {
+      this.stopDamagedMotorLoop();
     }
   }
 
   /**
-   * Remove um gerador da lista de regressão e interrompe os estalos se não houver mais nenhum regredindo.
+   * Encerra o oscilador contínuo de motor danificado.
+   */
+  public stopDamagedMotorLoop(): void {
+    this.isDamagedAudioPlaying = false;
+    if (this.damagedMotorOscillator) {
+      try {
+        this.damagedMotorOscillator.stop();
+        this.damagedMotorOscillator.disconnect();
+      } catch (_) {}
+      this.damagedMotorOscillator = null;
+    }
+    if (this.damagedMotorLfo) {
+      try {
+        this.damagedMotorLfo.stop();
+        this.damagedMotorLfo.disconnect();
+      } catch (_) {}
+      this.damagedMotorLfo = null;
+    }
+  }
+
+  /**
+   * Registra um gerador em regressão e inicia o loop de motor danificado e estalos estocásticos.
+   * @param genId Identificador do gerador
+   */
+  public startGeneratorSparkingSound(genId: string): void {
+    this.regressingGenerators.add(genId);
+    if (this.currentDamagedGeneratorDist === Infinity) {
+      this.currentDamagedGeneratorDist = 0;
+      this.currentDamagedGeneratorVolume = 1.0;
+    }
+    if (!this.sparkIntervalTimer && this.enabled) {
+      this.scheduleNextSpark();
+    }
+    if (!this.isDamagedAudioPlaying && this.enabled) {
+      this.startDamagedMotorLoop();
+    }
+  }
+
+  /**
+   * Remove um gerador da lista de regressão e interrompe o áudio se não houver mais nenhum regredindo.
    * @param genId Identificador do gerador
    */
   public stopGeneratorSparkingSound(genId: string): void {
@@ -791,11 +1030,22 @@ export class AudioManager {
         clearTimeout(this.sparkIntervalTimer);
         this.sparkIntervalTimer = null;
       }
+      this.stopDamagedMotorLoop();
+      this.currentDamagedGeneratorDist = Infinity;
+      this.currentDamagedGeneratorVolume = 0;
+      if (this.damagedGeneratorGainNode && this.ctx) {
+        try {
+          const now = this.ctx.currentTime;
+          this.damagedGeneratorGainNode.gain.cancelScheduledValues(now);
+          this.damagedGeneratorGainNode.gain.setValueAtTime(this.damagedGeneratorGainNode.gain.value, now);
+          this.damagedGeneratorGainNode.gain.linearRampToValueAtTime(0.0001, now + 0.05);
+        } catch (_) {}
+      }
     }
   }
 
   /**
-   * Limpa todos os geradores em regressão e para os estalos.
+   * Limpa todos os geradores em regressão e encerra todo o áudio de motor danificado e faíscas.
    */
   public stopAllSparkingSounds(): void {
     this.regressingGenerators.clear();
@@ -803,11 +1053,92 @@ export class AudioManager {
       clearTimeout(this.sparkIntervalTimer);
       this.sparkIntervalTimer = null;
     }
+    this.stopDamagedMotorLoop();
+    this.currentDamagedGeneratorDist = Infinity;
+    this.currentDamagedGeneratorVolume = 0;
+    if (this.damagedGeneratorGainNode && this.ctx) {
+      try {
+        const now = this.ctx.currentTime;
+        this.damagedGeneratorGainNode.gain.cancelScheduledValues(now);
+        this.damagedGeneratorGainNode.gain.setValueAtTime(this.damagedGeneratorGainNode.gain.value, now);
+        this.damagedGeneratorGainNode.gain.linearRampToValueAtTime(0.0001, now + 0.05);
+      } catch (_) {}
+    }
   }
 
   public isGeneratorSparking(genId?: string): boolean {
     if (genId) return this.regressingGenerators.has(genId);
     return this.regressingGenerators.size > 0;
+  }
+
+  public isDamagedMotorPlaying(): boolean {
+    return this.isDamagedAudioPlaying;
+  }
+
+  public getDamagedGeneratorVolume(): number {
+    return this.currentDamagedGeneratorVolume;
+  }
+
+  public getDamagedGeneratorDistance(): number {
+    return this.currentDamagedGeneratorDist;
+  }
+
+  /**
+   * Atualiza o volume com atenuação por distância do som contínuo de motor danificado e faíscas:
+   * - dist >= GENERATOR_AUDIO_MAX_DIST (600px / 10m): volume = 0 (silêncio total, zerando o ganho)
+   * - dist <= GENERATOR_AUDIO_MIN_DIST (90px / 1.5m): volume = 1.0 (volume nominal)
+   * - intervalo [90px, 600px]: interpolação suave decrescente
+   * - aplica linearRampToValueAtTime para eliminar cliques/estalos nas transições de fronteira
+   *
+   * @param listenerXOrDist Coordenada X do ouvinte OU distância direta em pixels
+   * @param listenerY Coordenada Y do ouvinte (se fornecidas coordenadas)
+   * @param genX Coordenada X do gerador danificado mais próximo
+   * @param genY Coordenada Y do gerador danificado mais próximo
+   * @returns Fator de volume [0, 1] aplicado
+   */
+  public updateDamagedGeneratorAudio(
+    listenerXOrDist: number,
+    listenerY?: number,
+    genX?: number,
+    genY?: number
+  ): number {
+    let dist: number;
+    if (listenerY !== undefined && genX !== undefined && genY !== undefined) {
+      dist = Math.hypot(listenerXOrDist - genX, listenerY - genY);
+    } else {
+      dist = listenerXOrDist;
+    }
+
+    if (!this.enabled || this.regressingGenerators.size === 0 || !isFinite(dist)) {
+      this.currentDamagedGeneratorDist = Infinity;
+      this.currentDamagedGeneratorVolume = 0;
+      if (this.damagedGeneratorGainNode && this.ctx) {
+        try {
+          const now = this.ctx.currentTime;
+          this.damagedGeneratorGainNode.gain.cancelScheduledValues(now);
+          this.damagedGeneratorGainNode.gain.setValueAtTime(this.damagedGeneratorGainNode.gain.value, now);
+          this.damagedGeneratorGainNode.gain.linearRampToValueAtTime(0.0001, now + 0.05);
+        } catch (_) {}
+      }
+      return 0;
+    }
+
+    const volume = calculateDamagedGeneratorAudioVolume(dist);
+    this.currentDamagedGeneratorDist = dist;
+    this.currentDamagedGeneratorVolume = volume;
+
+    if (this.ctx) {
+      const damagedBus = this.getDamagedGainNode(this.ctx);
+      const now = this.ctx.currentTime;
+      const targetGain = Math.max(0.0001, volume * 0.40 * this.volume);
+      try {
+        damagedBus.gain.cancelScheduledValues(now);
+        damagedBus.gain.setValueAtTime(damagedBus.gain.value, now);
+        damagedBus.gain.linearRampToValueAtTime(targetGain, now + 0.05);
+      } catch (_) {}
+    }
+
+    return volume;
   }
 
   private scheduleNextSpark(): void {
@@ -829,10 +1160,14 @@ export class AudioManager {
   }
 
   /**
-   * Emite um estalo elétrico curto e agudo de ruído filtrado em passa-alta (faísca estocástica).
+   * Emite um estalo elétrico curto e agudo de ruído filtrado em passa-alta (faísca estocástica),
+   * roteado pelo barramento com atenuação espacial de proximidade.
    */
   public playStochasticSpark(): void {
     if (!this.enabled) return;
+    if (this.currentDamagedGeneratorVolume <= 0.001 && this.currentDamagedGeneratorDist >= GENERATOR_AUDIO_MAX_DIST) {
+      return;
+    }
     const ctx = this.getContext();
     if (!ctx || !this.masterGain) return;
 
@@ -852,9 +1187,10 @@ export class AudioManager {
       gain.gain.setValueAtTime(vol, now);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
+      const damagedBus = this.getDamagedGainNode(ctx);
       noise.connect(filter);
       filter.connect(gain);
-      gain.connect(this.masterGain);
+      gain.connect(damagedBus);
 
       noise.start(now);
       noise.stop(now + duration);

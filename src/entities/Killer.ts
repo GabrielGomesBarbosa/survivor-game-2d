@@ -7,7 +7,7 @@
 
 import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
-import { DebugSettings, TILE_SIZE, COLS, ROWS } from '../config/constants';
+import { DebugSettings, TILE_SIZE, COLS, ROWS, TERROR_RADIUS_METERS } from '../config/constants';
 import { resolveAntiPushVelocity, resolveSolidBodyCollision, clampCircleAgainstNavGrid, smoothPathNodes, isRayClearOnNavGrid, hasClearanceLineOfSight, buildAiWeightedGrid, metersToPixels, checkAttackHit, wrapAngle } from '../utils/gameLogic';
 import { AudioManager } from '../audio/AudioManager';
 import { Player } from './Player';
@@ -703,24 +703,32 @@ export class Killer implements IKillerPawn {
     const detectionRadius = metersToPixels(settings.detectionRadius);
     const loseRadius = detectionRadius * 1.5;
 
-    this.visionGraphic.lineStyle(1.5, 0xf0c674, 0.25);
+    // Raio de Terror translúcido de 32 metros (1920px) ao redor do Killer (Carmesim)
+    const terrorRadiusPx = metersToPixels(TERROR_RADIUS_METERS);
+    this.visionGraphic.fillStyle(0xdc2626, 0.08);
+    this.visionGraphic.fillCircle(kx, ky, terrorRadiusPx);
+    this.visionGraphic.lineStyle(2.5, 0xdc2626, 0.6);
+    this.visionGraphic.strokeCircle(kx, ky, terrorRadiusPx);
+
+    // Raio de perda de perseguição (Amarelo / Dourado)
+    this.visionGraphic.lineStyle(2.5, 0xf0c674, 0.4);
     this.visionGraphic.strokeCircle(kx, ky, loseRadius);
 
     if (isChase) {
-      this.visionGraphic.fillStyle(0xff3333, 0.1);
+      this.visionGraphic.fillStyle(0xff2222, 0.12);
       this.visionGraphic.fillCircle(kx, ky, detectionRadius);
-      this.visionGraphic.lineStyle(2, 0xff2222, 0.7);
+      this.visionGraphic.lineStyle(2.5, 0xff2222, 0.85);
       this.visionGraphic.strokeCircle(kx, ky, detectionRadius);
 
-      this.visionGraphic.lineStyle(2, 0xff2222, 0.6);
+      this.visionGraphic.lineStyle(2.5, 0xff2222, 0.7);
       this.visionGraphic.lineBetween(kx, ky, targetPos.x, targetPos.y);
     } else {
-      this.visionGraphic.fillStyle(0xff8833, 0.05);
+      this.visionGraphic.fillStyle(0xff8833, 0.10);
       this.visionGraphic.fillCircle(kx, ky, detectionRadius);
-      this.visionGraphic.lineStyle(1.5, 0xff8833, 0.4);
+      this.visionGraphic.lineStyle(2.5, 0xff8833, 0.65);
       this.visionGraphic.strokeCircle(kx, ky, detectionRadius);
 
-      this.visionGraphic.lineStyle(1, 0x88bbff, 0.25);
+      this.visionGraphic.lineStyle(2.5, 0x88bbff, 0.45);
       this.visionGraphic.lineBetween(kx, ky, targetPos.x, targetPos.y);
     }
   }

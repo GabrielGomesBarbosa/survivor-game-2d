@@ -7,7 +7,7 @@
 
 import Phaser from 'phaser';
 import { SoundFX } from '../systems/SoundFX';
-import { AudioManager } from '../audio/AudioManager';
+import { AudioManager, GENERATOR_AUDIO_MAX_DIST } from '../audio/AudioManager';
 import {
   addGeneratorProgress,
   applyExplosionPenalty,
@@ -53,6 +53,7 @@ export class Generator {
   public progressBarFill: Phaser.GameObjects.Rectangle;
   public progressText: Phaser.GameObjects.Text;
   public floorZone: Phaser.GameObjects.Arc;
+  public audioRadiusZone: Phaser.GameObjects.Arc;
   public solidBlock: Phaser.GameObjects.Rectangle;
 
   private scene: Phaser.Scene;
@@ -78,9 +79,16 @@ export class Generator {
 
     // 1. Zona circular de interação no piso (130px)
     this.floorZone = scene.add.circle(def.x, def.y, this.interactionRadius);
-    this.floorZone.setStrokeStyle(2, 0xffaa00, 0.4);
-    this.floorZone.setFillStyle(0xffaa00, 0.04);
+    this.floorZone.setStrokeStyle(2.5, 0xffaa00, 0.65);
+    this.floorZone.setFillStyle(0xffaa00, 0.08);
     this.floorZone.setDepth(1);
+
+    // 1b. Anel sutil de depuração de raio acústico de regressão (10m = 600px)
+    this.audioRadiusZone = scene.add.circle(def.x, def.y, GENERATOR_AUDIO_MAX_DIST);
+    this.audioRadiusZone.setStrokeStyle(1.5, 0xff5500, 0.45);
+    this.audioRadiusZone.setFillStyle(0xff5500, 0.03);
+    this.audioRadiusZone.setDepth(1);
+    this.audioRadiusZone.setVisible(false);
 
     // 2. Colisor físico estático sólido para Player e Killer (50x112px ou 112x50px com rotação)
     this.solidBlock = scene.add.rectangle(
@@ -277,8 +285,21 @@ export class Generator {
     if (!this.isRegressing) return;
     this.isRegressing = false;
     this.repairAccumulatedTime = 0;
+    if (this.audioRadiusZone) {
+      this.audioRadiusZone.setVisible(false);
+    }
     AudioManager.getInstance().stopGeneratorSparkingSound(this.id);
     this.updateVisuals(false);
+  }
+
+  /**
+   * Atualiza a visibilidade do anel de depuração de alcance sonoro de regressão (10m = 600px).
+   * @param showVision Se 'Debug Visão' ou 'Visualizar Colisão' estiver ativo.
+   */
+  public updateAudioRadiusZone(showVision: boolean): void {
+    if (this.audioRadiusZone) {
+      this.audioRadiusZone.setVisible(Boolean(this.isRegressing && !this.isCompleted && showVision));
+    }
   }
 
   /**
@@ -418,6 +439,9 @@ export class Generator {
     this.stopRegression();
     if (this.floorZone) {
       this.floorZone.destroy();
+    }
+    if (this.audioRadiusZone) {
+      this.audioRadiusZone.destroy();
     }
     if (this.solidBlock) {
       this.solidBlock.destroy();

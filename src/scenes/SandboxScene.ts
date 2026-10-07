@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import EasyStar from 'easystarjs';
 import survivorMeta from '../assets/survivor.json';
 import generatorMeta from '../assets/generator.json';
-import { WORLD_WIDTH, WORLD_HEIGHT, TILE_SIZE } from '../config/constants';
+import { WORLD_WIDTH, WORLD_HEIGHT, TILE_SIZE, TERROR_RADIUS_MAX } from '../config/constants';
 import { MapBuilder, MapData } from '../map/MapBuilder';
 import { Player } from '../entities/Player';
 import { Killer } from '../entities/Killer';
@@ -16,6 +16,7 @@ import { DebugPanel } from '../ui/DebugPanel';
 import {
   calculateEdgeToEdgeDistance,
   pixelsToMeters,
+  metersToPixels,
   formatCurrentTile,
   evaluateCameraPanState,
   getMappedCandidatePool,
@@ -285,6 +286,7 @@ export class SandboxScene extends Phaser.Scene {
     };
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      AudioManager.getInstance().ensureContextRunning();
       const isSpace = isSpaceKeyDown();
       const isMiddle = isMiddleButton(pointer);
       const isLeft = isLeftButton(pointer);
@@ -319,7 +321,7 @@ export class SandboxScene extends Phaser.Scene {
       // LMB: Posicionar gerador apenas se panState.canPlaceGenerator for verdadeiro
       if (panState.canPlaceGenerator && this.generatorPlacer?.isActive) {
         this.generatorPlacer.handlePointerDown(pointer);
-      } else if (isLeft && (!this.debugPanel.settings.killerAiEnabled || !this.debugPanel.settings.survivorActive)) {
+      } else if (isLeft && this.debugPanel.settings.manualKillerControl) {
         if (this.killer && !this.isPanningCamera) {
           this.killer.performAttack(this.player);
         }
@@ -371,8 +373,9 @@ export class SandboxScene extends Phaser.Scene {
     window.addEventListener('auxclick', (e) => {
       if (e.button === 1) e.preventDefault();
     });
-    // Previne scroll de página nativo ao segurar Espaço no navegador
+    // Previne scroll de página nativo ao segurar Espaço no navegador e desbloqueia o AudioContext
     window.addEventListener('keydown', (e) => {
+      AudioManager.getInstance().ensureContextRunning();
       if (e.code === 'Space') e.preventDefault();
       this.activeKeys.add(e.code);
     }, true);
@@ -393,6 +396,26 @@ export class SandboxScene extends Phaser.Scene {
     const audio = AudioManager.getInstance();
     audio.setEnabled(this.debugPanel.settings.audioEnabled);
     audio.setMasterVolume(this.debugPanel.settings.masterVolume);
+
+    // Feedback visual de áudio em espera (Autoplay Policy Feedback)
+    if (!audio.isContextRunning()) {
+      this.telemetryHud.setAudioPromptVisible(true);
+    } else {
+      this.telemetryHud.setAudioPromptVisible(false);
+    }
+
+    audio.onAudioUnlocked(() => {
+      this.telemetryHud.setAudioPromptVisible(false);
+    });
+
+    if (typeof document !== 'undefined') {
+      const audioPromptEl = document.getElementById('hud-audio-prompt');
+      if (audioPromptEl) {
+        audioPromptEl.addEventListener('click', () => {
+          audio.ensureContextRunning();
+        });
+      }
+    }
   }
 
   update(_time: number, delta: number): void {
@@ -401,15 +424,17 @@ export class SandboxScene extends Phaser.Scene {
     }
 
     // 1. Atualização contínua de regressão e faíscas em todos os geradores ativos
+    const showVisionDebug = Boolean(this.debugPanel.settings.showKillerVision || this.debugPanel.settings.showPhysicsDebug);
     for (const gen of this.generators) {
       gen.update(delta);
+      gen.updateAudioRadiusZone(showVisionDebug);
     }
 
     this.handleGeneratorInteraction(delta);
     this.player.update(delta, this.isRepairing, this.debugPanel.settings);
 
-    // Disparo manual de ataque via Barra de Espaço (caso o Killer esteja sem IA ou em Modo Espectador)
-    if (this.keySpace && Phaser.Input.Keyboard.JustDown(this.keySpace) && (!this.debugPanel.settings.killerAiEnabled || !this.debugPanel.settings.survivorActive)) {
+    // Disparo manual de ataque via Barra de Espaço (apenas se manualKillerControl estiver explicitamente ativo)
+    if (this.keySpace && Phaser.Input.Keyboard.JustDown(this.keySpace) && this.debugPanel.settings.manualKillerControl) {
       this.killer.performAttack(this.player);
     }
 
@@ -436,6 +461,16 @@ export class SandboxScene extends Phaser.Scene {
       if (this.survivorFootstepTimer >= survivorCadence) {
         this.survivorFootstepTimer = 0;
         audio.playSurvivorFootstep(this.player.isSprinting);
+        const radiusMeters = this.player.isSprinting
+          ? (this.debugPanel.settings.runNoiseRadius ?? 14.0)
+          : (this.debugPanel.settings.walkNoiseRadius ?? 4.0);
+        this.events.emit('noise-emitted', {
+          x: this.player.x,
+          y: this.player.y,
+          radiusInMeters: radiusMeters,
+          source: 'survivor'
+        });
+        this.spawnSoundWave(this.player.x, this.player.y, radiusMeters, 0x00ffff, 900);
       }
     } else {
       this.survivorFootstepTimer = 0;
@@ -450,8 +485,15 @@ export class SandboxScene extends Phaser.Scene {
         const distToPlayer = (this.player.isActive && this.debugPanel.settings.survivorActive)
           ? Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y)
           : 0;
-        const volScale = distToPlayer > 1200 ? 0 : Math.max(0.1, 1 - distToPlayer / 1200);
+        const volScale = distToPlayer > TERROR_RADIUS_MAX ? 0 : Math.max(0.1, 1 - distToPlayer / TERROR_RADIUS_MAX);
         audio.playKillerFootstep(volScale);
+        this.spawnSoundWave(this.killer.x, this.killer.y, 14.0, 0xa855f7, 900);
+        this.events.emit('noise-emitted', {
+          x: this.killer.x,
+          y: this.killer.y,
+          radiusInMeters: 14.0,
+          source: 'killer'
+        });
       }
     } else {
       this.killerFootstepTimer = 0;
@@ -464,8 +506,36 @@ export class SandboxScene extends Phaser.Scene {
       audio.stopGeneratorRepairSound();
     }
 
-    // 4. Raio de Terror de Duas Camadas (Heartbeat < 500px + Drone Dissonante < 250px ou CHASE)
+    // 4. Atenuação Espacial de Áudio de Gerador Danificado / Regredindo (10m = 600px cutoff)
     const isSpectator = this.isSpectatorMode;
+    const isSurvivorActive = this.player.isActive && this.debugPanel.settings.survivorActive && !isSpectator;
+    const listenerX = isSurvivorActive
+      ? this.player.x
+      : (this.cameras.main.scrollX + this.cameras.main.width / 2);
+    const listenerY = isSurvivorActive
+      ? this.player.y
+      : (this.cameras.main.scrollY + this.cameras.main.height / 2);
+
+    let closestDamagedGen: Generator | null = null;
+    let closestDamagedDist = Infinity;
+
+    for (const gen of this.generators) {
+      if (gen.isRegressing && !gen.isCompleted) {
+        const d = Phaser.Math.Distance.Between(listenerX, listenerY, gen.x, gen.y);
+        if (d < closestDamagedDist) {
+          closestDamagedDist = d;
+          closestDamagedGen = gen;
+        }
+      }
+    }
+
+    if (closestDamagedGen) {
+      audio.updateDamagedGeneratorAudio(listenerX, listenerY, closestDamagedGen.x, closestDamagedGen.y);
+    } else {
+      audio.updateDamagedGeneratorAudio(Infinity);
+    }
+
+    // 5. Raio de Terror de Duas Camadas (Heartbeat < 500px + Drone Dissonante < 250px ou CHASE)
     const terrorDist = isSpectator
       ? Infinity
       : Phaser.Math.Distance.Between(this.player.x, this.player.y, this.killer.x, this.killer.y);
@@ -473,7 +543,7 @@ export class SandboxScene extends Phaser.Scene {
 
     audio.updateTerrorRadius(terrorDist, killerState, delta);
 
-    // 5. Feedback Visual do Raio de Terror (Coração Pulsante & Vinheta)
+    // 6. Feedback Visual do Raio de Terror (Coração Pulsante & Vinheta)
     this.hud.updateHeartbeatVisual(
       terrorDist,
       isSpectator,
@@ -583,6 +653,46 @@ export class SandboxScene extends Phaser.Scene {
     this.persistActiveGenerators();
   }
 
+  /**
+   * Renderiza uma onda acústica expansiva (ripple) animada com fade-out.
+   * @param x Coordenada X central.
+   * @param y Coordenada Y central.
+   * @param radiusInMeters Raio final da expansão acústica em metros.
+   * @param color Cor hexadecimal da linha.
+   * @param duration Duração da interpolação em milissegundos.
+   */
+  public spawnSoundWave(
+    x: number,
+    y: number,
+    radiusInMeters: number,
+    color: number = 0x00ffff,
+    duration: number = 900
+  ): void {
+    if (!this.debugPanel?.settings?.showSoundWaves) return;
+
+    const targetRadius = metersToPixels(radiusInMeters);
+    const wave = this.add.graphics({ x, y });
+    wave.setDepth(7);
+
+    const waveData = { progress: 0, alpha: 0.75 };
+    this.tweens.add({
+      targets: waveData,
+      progress: 1,
+      alpha: 0,
+      duration,
+      ease: 'Cubic.easeOut',
+      onUpdate: () => {
+        wave.clear();
+        const currentRadius = targetRadius * waveData.progress;
+        wave.lineStyle(2.5, color, waveData.alpha);
+        wave.strokeCircle(0, 0, currentRadius);
+      },
+      onComplete: () => {
+        wave.destroy();
+      }
+    });
+  }
+
   private onSkillCheckResult(result: SkillCheckResult): void {
     if (result === 'GREAT' || result === 'GOOD') {
       if (this.activeNearbyGen && !this.activeNearbyGen.isCompleted) {
@@ -599,6 +709,13 @@ export class SandboxScene extends Phaser.Scene {
         this.skillCheck.triggerNoiseAlert(this.activeNearbyGen.x, this.activeNearbyGen.y);
         this.killer.alertToNoise(this.activeNearbyGen.x, this.activeNearbyGen.y, this.activeNearbyGen);
         this.telemetryHud.showNotification('💥 O Assassino foi alertado da explosão do gerador!', true);
+        this.spawnSoundWave(this.activeNearbyGen.x, this.activeNearbyGen.y, 36.0, 0xff5522, 800);
+        this.events.emit('noise-emitted', {
+          x: this.activeNearbyGen.x,
+          y: this.activeNearbyGen.y,
+          radiusInMeters: 36.0,
+          source: 'generator'
+        });
       } else {
         SoundFX.playExplosion();
         this.cameras.main.shake(300, 0.01);
@@ -634,6 +751,7 @@ export class SandboxScene extends Phaser.Scene {
     const totalGens = this.generators.length;
     const requiredGens = this.debugPanel?.settings.generatorRequiredTarget ?? 5;
     this.telemetryHud.update(fps, this.killer.state, killerDistStr, completedCount, totalGens, requiredGens);
+    this.telemetryHud.updateRadiusLegend(this.debugPanel.settings);
   }
 
   /**
